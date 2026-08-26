@@ -11,8 +11,8 @@ import nodes
 from comfy_extras.nodes_minimax_h3 import _encode_ref_audio
 
 from .auto_chain import (
-    _cpu_av_latent, _decode_audio, _decode_video, _make_enhance_clip, _open_live_session,
-    _overlap_identity_frame, _pack_first_frame, _pack_ref_kwargs, _prepare_output_images, _progress, _release_loaded_models,
+    _cpu_av_latent, _decode_audio, _decode_video, _open_live_session,
+    _overlap_identity_frame, _pack_first_frame, _pack_ref_kwargs, _progress, _release_loaded_models,
     _resolve_clip_pack, _sample_segment, _segment_noise, _start_reference_images, _write_clip_preview,
 )
 from .chain_inputs import (
@@ -112,8 +112,7 @@ def _write_music_video_clip_previews(images, audio_vae, latent, song, slice_star
 def _stitch_saved_video(video_vae, saved_paths, video_crossfade_frames,
                         max_safe_tail_bridge_frames, unique_id=None,
                         filename_prefix=PNG_PREFIX,
-                        max_video_frames=None, frames_dir=None,
-                        enhance_clip=None):
+                        max_video_frames=None, frames_dir=None):
     from .stream_stitch import stream_stitch_saved_clips
 
     result = stream_stitch_saved_clips(
@@ -128,7 +127,6 @@ def _stitch_saved_video(video_vae, saved_paths, video_crossfade_frames,
         info_prefix="music-video stream stitch",
         progress_cb=lambda text: _progress(unique_id, text),
         frames_dir=frames_dir,
-        enhance_clip=enhance_clip,
         keep_in_ram=frames_dir is None,
     )
     return result
@@ -204,8 +202,6 @@ def _mux_original_song(song, spans, target_frames):
 class H3StudioMusicVideo:
     @classmethod
     def INPUT_TYPES(cls):
-        from .derope import derope_input_specs
-        from .latent_upscale import upscale_input_specs
         from .png_sequence import save_images_to_disk_spec
         required = {
                 "model_1": ("MODEL", {
@@ -305,8 +301,6 @@ class H3StudioMusicVideo:
                     "tooltip": "Reuse up to this many detector-approved rendered frames from the previous clip and skip the same number of early video frames in the next clip. Mux follows those kept pixels.",
                 }),
                 "save_images_to_disk": save_images_to_disk_spec(),
-                **upscale_input_specs(),
-                **derope_input_specs(),
             }
         optional = {
                 "song_audio_lock": ("FLOAT", {
@@ -351,10 +345,6 @@ class H3StudioMusicVideo:
                  resume_from_clip=1, stop_after_clip=0,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
                  save_images_to_disk=False,
-                 latent_upscale=False, latent_upscale_mode="scale by multiplier",
-                 latent_upscale_scale=2.0, latent_upscale_megapixels=1.0,
-                 latent_upscale_precision="fp32",
-                 de_rope=False, de_rope_inject=0.48,
                  unique_id=None, pack=None, **kwargs):
         from .nodes import (
             H3ContinuousAnalyzeHandoverV11, H3ContinuousContinueV11,
@@ -379,27 +369,17 @@ class H3StudioMusicVideo:
         from .png_sequence import (
             node_temp_frames_dir, pack_image_output, require_image_ram, warn_disk_budget,
         )
-        from .latent_upscale import collect_upscale_settings, is_upscale_on, output_pixel_size
-        de_rope = bool(de_rope)
-        de_rope_inject = float(de_rope_inject)
         save_images_to_disk = bool(save_images_to_disk)
-        upscale = collect_upscale_settings(
-            latent_upscale, latent_upscale_mode, latent_upscale_scale,
-            latent_upscale_megapixels, latent_upscale_precision,
-        )
         n_clips = stop_after if stop_after > 0 else prompt_n
-        out_w, out_h = output_pixel_size(width, height, upscale)
         extra = (
             f"Music Video: {n_clips} clip(s) x {float(duration):g}s "
             f"(stitched picture ~{song_frames} frames / {song_seconds:.1f}s)"
         )
-        if is_upscale_on(upscale):
-            extra += " | 3D latent upscale"
-        require_image_ram(song_frames, out_w, out_h, save_images_to_disk)
+        require_image_ram(song_frames, width, height, save_images_to_disk)
         out_frames = None
         if save_images_to_disk:
             warn_disk_budget(
-                grid_frame_count(duration) * n_clips, out_w, out_h,
+                grid_frame_count(duration) * n_clips, width, height,
                 unique_id=unique_id, extra=extra,
             )
             out_frames = node_temp_frames_dir(PNG_PREFIX, unique_id)
@@ -431,17 +411,6 @@ class H3StudioMusicVideo:
         freeze_overlap = bool(freeze_overlap)
         overlap_soft_steps = int(overlap_soft_steps)
         song_audio_lock = min(max(float(song_audio_lock), 0.0), 1.0)
-        enhance_clip = _make_enhance_clip(
-            de_rope=de_rope, de_rope_inject=de_rope_inject, latent_upscale=upscale,
-            clip=clip, video_vae=video_vae, sampler=sampler, sigmas=sigmas, noise=noise,
-            width=width, height=height, duration=duration, unique_id=unique_id,
-            model_for_clip=lambda i: (
-                _resolve_clip_pack(pack, parsed_clips[int(i) - 1]["prompt"], song_audio=True)["model"]
-                if pack is not None else model_1
-            ),
-            prompt_for_clip=lambda i: parsed_clips[int(i) - 1]["prompt"],
-            duration_for_clip=lambda i: float(parsed_clips[int(i) - 1]["duration_seconds"]),
-        )
         session = None
         live_stitch = not reuse
 
@@ -626,16 +595,7 @@ class H3StudioMusicVideo:
             )
             tail = 0 if is_last else int(handover.get("landing_tail_frames", 0))
             cursor = advance_cursor(slice_start, grid_frames, tail, is_last=is_last)
-            images_out = _prepare_output_images(
-                images, last_latent, de_rope=de_rope, de_rope_inject=de_rope_inject,
-                latent_upscale=upscale, video_vae=video_vae, model=clip_model,
-                sampler=sampler, sigmas=sigmas, noise=noise, positive=positive,
-                clip_index=clip_index, is_final=is_last,
-                head_skip=int(head_context or 0),
-                tail_skip=int(tail),
-                unique_id=unique_id,
-            )
-            del positive, images
+            del positive
 
             extra = {
                 "music_video": "1",
@@ -653,7 +613,7 @@ class H3StudioMusicVideo:
             _LOG.info("h3_music_video: clip %s saved %s (cursor %s)", clip_index, latent_path, cursor)
             if save_clip_videos:
                 song_preview, generated_preview = _write_music_video_clip_previews(
-                    images_out, audio_vae, last_latent, song, slice_start,
+                    images, audio_vae, last_latent, song, slice_start,
                     latent_prefix, clip_index,
                 )
                 notes.append(f"clip {clip_index} preview {song_preview}")
@@ -666,8 +626,8 @@ class H3StudioMusicVideo:
                 from .nodes import _read_safetensors_metadata
                 metadata, _ignored = _read_safetensors_metadata(latent_path)
                 ensure_session()
-                session.add_decoded_clip(images_out, None, metadata, handover, clip_index, is_last)
-            del images_out
+                session.add_decoded_clip(images, None, metadata, handover, clip_index, is_last)
+            del images
             _release_loaded_models()
             if cursor >= song_frames:
                 break
@@ -687,7 +647,6 @@ class H3StudioMusicVideo:
                     unique_id=unique_id,
                     max_video_frames=song_frames,
                     frames_dir=out_frames,
-                    enhance_clip=enhance_clip,
                 )
         except BaseException:
             if session is not None and not session._closed:

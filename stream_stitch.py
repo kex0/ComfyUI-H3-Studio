@@ -291,7 +291,6 @@ class StreamStitchSession:
         extra_metadata=None,
         info_prefix="stream stitch",
         frames_dir=None,
-        enhance_clip=None,
         keep_in_ram=False,
     ):
         self.filename_prefix = filename_prefix
@@ -300,7 +299,6 @@ class StreamStitchSession:
         self.close_loop = bool(close_loop)
         self.loop_overlap_frames = int(loop_overlap_frames or 0)
         self.info_prefix = info_prefix
-        self.enhance_clip = enhance_clip
         self.keep_in_ram = bool(keep_in_ram)
         self.video_chunks = []
         if self.keep_in_ram:
@@ -576,12 +574,6 @@ class StreamStitchSession:
         else:
             images = _decode_saved_video_only(video_vae, video_latent)
             audio = None
-        if self.enhance_clip is not None:
-            import comfy.nested_tensor
-            if "audio" not in tensors:
-                raise ValueError(f"saved clip {clip_index} lacks an audio tensor for de-rope/upscale: {path}")
-            latent = {"samples": comfy.nested_tensor.NestedTensor((video_latent, tensors["audio"]))}
-            images = self.enhance_clip(latent, images, handover, clip_index, is_final, metadata)
         del tensors, video_latent
         if int(images.shape[0]) != frame_count:
             raise ValueError(
@@ -700,7 +692,6 @@ def stream_stitch_saved_clips(
     info_prefix="stream stitch",
     progress_cb=None,
     frames_dir=None,
-    enhance_clip=None,
     keep_in_ram=False,
 ):
     """Decode one saved clip at a time. PNG on disk, or keep the stitch in RAM."""
@@ -726,7 +717,6 @@ def stream_stitch_saved_clips(
         extra_metadata=extra_metadata,
         info_prefix=info_prefix,
         frames_dir=frames_dir,
-        enhance_clip=enhance_clip,
         keep_in_ram=keep_in_ram,
     )
     try:

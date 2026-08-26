@@ -47,15 +47,12 @@ Multi-clip jobs need `llama-server`. A single clip can fall back to `llama-cli`.
 
 Point Face Refine `video_path` at the `png …` folder from `chain_info` (ComfyUI temp). Each run prints a disk/RAM banner first: uncompressed RGB ceiling for the PNG sequence, plus float32 RAM for the `IMAGE` output.
 
-Optional **windowed de-rope** (`de_rope`, default off) runs MAINodes jerk-oracle burst windows after the native decode: Time Smear → V2V → Exact Recover, skipping Continue overlap head/tail so freeze-overlap tokens still match. Requires [ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes) as a sibling pack. Optional **3D latent upscale** (`latent_upscale` toggle) is decode/stitch only — saved Continue latents stay native size. When on, choose `scale by multiplier` or `megapixels`, plus precision. Disk budget follows the chosen output size. De-rope always runs at native resolution before any upscale. Music Video still muxes the original song.
-
 ## Dependencies
 
 - ComfyUI MiniMax H3 (stock nodes, not a custom pack)
 - llama.cpp (`llama-server`) for Local Infinite Prompter — see [Install llama.cpp](#install-llamacpp)
 - `ultralytics`, `scipy`, `insightface` for Face Refine
 - MaskVidExperiments is optional (crop-teleport packing). Without it, Face Refine falls back to gaussian crop follow
-- Windowed de-rope needs sibling `ComfyUI-MAINodes`. 3D latent upscale needs sibling `Comfyui_Minimax_h3_latent_Upscaler` and checkpoints in `models/latent_upscale_models/`
 
 Song timestamping for music-video prompts lives in the Cursor skill `prompt-minimax-h3-music-video` (Parakeet venv, transcribe script). This pack does not ship that installer.
 

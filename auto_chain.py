@@ -135,8 +135,7 @@ def _stitch_saved_to_av(video_vae, audio_vae, saved_paths, video_crossfade_frame
                         audio_crossfade_ms, max_safe_tail_bridge_frames, unique_id=None,
                         last_as_final_clip=True, close_loop=False,
                         loop_start_trim_frames=0, loop_overlap_frames=0,
-                        filename_prefix=PNG_PREFIX, frames_dir=None,
-                        enhance_clip=None):
+                        filename_prefix=PNG_PREFIX, frames_dir=None):
     from .stream_stitch import stream_stitch_saved_clips
 
     result = stream_stitch_saved_clips(
@@ -153,7 +152,6 @@ def _stitch_saved_to_av(video_vae, audio_vae, saved_paths, video_crossfade_frame
         info_prefix="auto-chain stream stitch",
         progress_cb=lambda text: _progress(unique_id, text),
         frames_dir=frames_dir,
-        enhance_clip=enhance_clip,
         keep_in_ram=frames_dir is None,
     )
     return result["images"], result["audio"], result["info"], result["frames_dir"]
@@ -186,77 +184,6 @@ def _decode_video(video_vae, latent):
     if images.ndim != 4:
         raise ValueError(f"h3_continuous: unexpected decoded video shape {tuple(images.shape)}")
     return images
-
-
-def _text_positive(clip, video_vae, prompt, width, height, duration):
-    from .nodes import H3ContinuousStartV11
-    start = H3ContinuousStartV11()
-    positive, empty = start.build(clip, video_vae, prompt or "", width, height, duration)
-    del empty
-    return positive
-
-
-def _prepare_output_images(
-    images, latent, *,
-    de_rope=False, de_rope_inject=0.48, latent_upscale=None,
-    video_vae=None, model=None, sampler=None, sigmas=None, noise=None,
-    positive=None, clip_index=1, is_final=False, head_skip=0, tail_skip=0,
-    unique_id=None,
-):
-    from .derope import derope_clip_images
-    from .latent_upscale import av_clone_from_images, is_upscale_on, upscale_av_latent
-
-    out = images
-    if de_rope:
-        out = derope_clip_images(
-            out, latent, inject=de_rope_inject, video_vae=video_vae, model=model,
-            sampler=sampler, sigmas=sigmas, noise=noise, positive=positive,
-            clip_index=clip_index, is_final=is_final, head_skip=head_skip,
-            tail_skip=tail_skip, unique_id=unique_id, enabled=True,
-        )
-    if is_upscale_on(latent_upscale):
-        src = latent
-        if de_rope:
-            _release_loaded_models()
-            src = av_clone_from_images(out, latent, video_vae)
-        _release_loaded_models()
-        up = upscale_av_latent(src, latent_upscale)
-        _release_loaded_models()
-        out = _decode_video(video_vae, up)
-        _release_loaded_models()
-    return out
-
-
-def _make_enhance_clip(
-    *, de_rope, de_rope_inject, latent_upscale, clip, video_vae, sampler, sigmas, noise,
-    width, height, duration, unique_id, model_for_clip, prompt_for_clip,
-    duration_for_clip=None,
-):
-    from .latent_upscale import is_upscale_on
-
-    if not de_rope and not is_upscale_on(latent_upscale):
-        return None
-
-    def enhance(latent, images, handover, clip_index, is_final, metadata):
-        positive = None
-        model = model_for_clip(clip_index)
-        clip_duration = duration_for_clip(clip_index) if duration_for_clip is not None else duration
-        if de_rope:
-            _release_loaded_models()
-            positive = _text_positive(
-                clip, video_vae, prompt_for_clip(clip_index), width, height, clip_duration,
-            )
-        head_skip = 0 if int(clip_index) <= 1 else int((metadata or {}).get("head_context_frames") or 0)
-        tail_skip = 0 if is_final else int((handover or {}).get("landing_tail_frames") or 0)
-        return _prepare_output_images(
-            images, latent, de_rope=de_rope, de_rope_inject=de_rope_inject,
-            latent_upscale=latent_upscale, video_vae=video_vae, model=model,
-            sampler=sampler, sigmas=sigmas, noise=noise, positive=positive,
-            clip_index=clip_index, is_final=is_final, head_skip=head_skip,
-            tail_skip=tail_skip, unique_id=unique_id,
-        )
-
-    return enhance
 
 
 def _overlap_identity_frame(images, previous_latent, context_frames, handover):
@@ -386,10 +313,6 @@ class H3StudioAutoChain:
         })
         from .png_sequence import save_images_to_disk_spec
         required["save_images_to_disk"] = save_images_to_disk_spec()
-        from .derope import derope_input_specs
-        from .latent_upscale import upscale_input_specs
-        required.update(upscale_input_specs())
-        required.update(derope_input_specs())
         optional = {
             **music_video_reference_image_specs(),
         }
@@ -432,10 +355,6 @@ class H3StudioAutoChain:
                  video_crossfade_frames=4, audio_crossfade_ms=15.0,
                  max_safe_tail_bridge_frames=2,
                  save_images_to_disk=False,
-                 latent_upscale=False, latent_upscale_mode="scale by multiplier",
-                 latent_upscale_scale=2.0, latent_upscale_megapixels=1.0,
-                 latent_upscale_precision="fp32",
-                 de_rope=False, de_rope_inject=0.48,
                  seamless_loop=False, loop_prompt="", prompt="",
                  model_loop=None,
                  unique_id=None, pack=None, **kwargs):
@@ -454,24 +373,14 @@ class H3StudioAutoChain:
             node_temp_frames_dir, pack_image_output, require_image_ram, warn_disk_budget,
         )
         from .song_math import grid_frame_count
-        from .latent_upscale import collect_upscale_settings, is_upscale_on, output_pixel_size
-        de_rope = bool(de_rope)
-        de_rope_inject = float(de_rope_inject)
         save_images_to_disk = bool(save_images_to_disk)
-        upscale = collect_upscale_settings(
-            latent_upscale, latent_upscale_mode, latent_upscale_scale,
-            latent_upscale_megapixels, latent_upscale_precision,
-        )
         n_png = grid_frame_count(duration) * (segments + (1 if seamless_loop else 0))
-        out_w, out_h = output_pixel_size(width, height, upscale)
         extra = f"Auto Chain: {segments} clip(s) x {float(duration):g}s" + (" + loop" if seamless_loop else "")
-        if is_upscale_on(upscale):
-            extra += " | 3D latent upscale"
-        require_image_ram(n_png, out_w, out_h, save_images_to_disk)
+        require_image_ram(n_png, width, height, save_images_to_disk)
         out_frames = None
         if save_images_to_disk:
             warn_disk_budget(
-                n_png, out_w, out_h, unique_id=unique_id,
+                n_png, width, height, unique_id=unique_id,
                 extra=extra,
             )
             out_frames = node_temp_frames_dir(PNG_PREFIX, unique_id)
@@ -504,13 +413,6 @@ class H3StudioAutoChain:
                 return str(loop_prompt or "").strip()
             value = prompts[int(clip_index) - 1]
             return value if value is not None else ""
-
-        enhance_clip = _make_enhance_clip(
-            de_rope=de_rope, de_rope_inject=de_rope_inject, latent_upscale=upscale,
-            clip=clip, video_vae=video_vae, sampler=sampler, sigmas=sigmas, noise=noise,
-            width=width, height=height, duration=duration, unique_id=unique_id,
-            model_for_clip=model_for_clip, prompt_for_clip=prompt_for_clip,
-        )
 
         start = H3ContinuousStartV11()
         cont = H3ContinuousContinueV11()
@@ -680,16 +582,7 @@ class H3StudioAutoChain:
                     images, last_latent, context_frames, handover,
                 )
                 is_final = (not seamless_loop) and clip_index == segments
-                images_out = _prepare_output_images(
-                    images, last_latent, de_rope=de_rope, de_rope_inject=de_rope_inject,
-                    latent_upscale=upscale, video_vae=video_vae, model=clip_model,
-                    sampler=sampler, sigmas=sigmas, noise=noise, positive=positive,
-                    clip_index=clip_index, is_final=is_final,
-                    head_skip=int(head_context or 0),
-                    tail_skip=int((handover or {}).get("landing_tail_frames", 0) or 0),
-                    unique_id=unique_id,
-                )
-                del positive, images
+                del positive
                 latent_path, save_info = saver.save(
                     last_latent, latent_prefix, clip_index=clip_index,
                     handover=handover, head_context_frames=int(head_context or 0),
@@ -699,8 +592,8 @@ class H3StudioAutoChain:
                 notes.append(f"clip {clip_index} {status} | saved {save_info}")
                 _LOG.info("h3_continuous: Auto Chain clip %s saved %s", clip_index, latent_path)
                 if save_clip_videos or live_stitch:
-                    commit_live(images_out, clip_audio, latent_path, clip_index, is_final, handover)
-                del images_out, clip_audio
+                    commit_live(images, clip_audio, latent_path, clip_index, is_final, handover)
+                del images, clip_audio
                 _release_loaded_models()
 
             if seamless_loop:
@@ -755,16 +648,7 @@ class H3StudioAutoChain:
                     _release_loaded_models()
                 last_handover = handover
                 previous_latent = last_latent
-                images_out = _prepare_output_images(
-                    images, last_latent, de_rope=de_rope, de_rope_inject=de_rope_inject,
-                    latent_upscale=upscale, video_vae=video_vae, model=loop_model,
-                    sampler=sampler, sigmas=sigmas, noise=noise, positive=positive,
-                    clip_index=loop_index, is_final=True,
-                    head_skip=int(head_context or 0),
-                    tail_skip=int((handover or {}).get("landing_tail_frames", 0) or 0),
-                    unique_id=unique_id,
-                )
-                del positive, images
+                del positive
                 latent_path, save_info = saver.save(
                     last_latent, latent_prefix, clip_index=loop_index,
                     handover=handover, head_context_frames=int(head_context or 0),
@@ -774,8 +658,8 @@ class H3StudioAutoChain:
                 notes.append(f"loop {status} | saved {save_info}")
                 _LOG.info("h3_continuous: Auto Chain loop clip saved %s", latent_path)
                 if save_clip_videos or live_stitch:
-                    commit_live(images_out, clip_audio, latent_path, loop_index, True, handover)
-                del images_out, clip_audio
+                    commit_live(images, clip_audio, latent_path, loop_index, True, handover)
+                del images, clip_audio
                 _release_loaded_models()
 
             _release_loaded_models()
@@ -796,7 +680,6 @@ class H3StudioAutoChain:
                     loop_start_trim_frames=loop_start_trim if seamless_loop else 0,
                     loop_overlap_frames=loop_end_frames,
                     frames_dir=out_frames,
-                    enhance_clip=enhance_clip,
                 )
         except BaseException:
             if session is not None and not session._closed:
