@@ -1,0 +1,20 @@
+[project]
+name = "comfyui-h3-studio"
+description = "Standalone MiniMax H3 Music Video, Auto Chain, Face Refine Video, and Load Song nodes for ComfyUI."
+version = "1.0.0"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+readme = "README.md"
+keywords = ["comfyui", "minimax-h3", "music-video", "face", "continuation"]
+classifiers = [
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "ultralytics",
+    "scipy",
+    "insightface",
+]
+
+[tool.comfy]
+PublisherId = "h3-studio"
+DisplayName = "ComfyUI-H3-Studio"
