@@ -302,6 +302,9 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert 'required.pop("segments"' in adv_auto
     assert 'required.pop("loop_prompt"' in adv_auto
     assert 'required.pop(f"prompt_{i}"' in adv_auto
+    assert "prompt_mode" in adv_auto
+    assert 'optional["prompt_mode"]' in adv_auto
+    assert "document_has_loop" in adv_auto
     assert "duration_and_segments_from_pack_or_prompt" in adv_auto
     assert 'startswith("reference_image")' in adv_auto
     assert 'startswith("model_")' in adv_auto

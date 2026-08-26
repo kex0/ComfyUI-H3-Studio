@@ -362,6 +362,19 @@ def _header_timing(text) -> tuple[float | None, int | None]:
     return duration, segments
 
 
+def document_has_loop(text) -> bool:
+    raw = str(text or "")
+    if not looks_like_unified(raw):
+        return False
+    try:
+        parsed = parse_prompt_document(raw, mode="auto_chain")
+    except ValueError:
+        return False
+    if parsed.get("loop"):
+        return True
+    return any(clip.get("is_loop") for clip in parsed.get("clips") or [])
+
+
 def duration_and_segments_from_pack_or_prompt(pack, prompt, *, need_segments=False):
     """Read clip length (and Auto Chain clip count) from the prompt, else the Builder pack."""
     text = str(prompt or "").strip()

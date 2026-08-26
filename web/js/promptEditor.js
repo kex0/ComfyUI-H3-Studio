@@ -7,6 +7,11 @@ const PROMPT_NODES = new Set([
     "H3StudioAutoChain", "H3StudioAutoChainAdvanced",
     "H3StudioMusicVideo", "H3StudioMusicVideoAdvanced",
 ]);
+const ADVANCED_AUTO_CHAIN = "H3StudioAutoChainAdvanced";
+const MAX_CLIP_PROMPTS = 12;
+const MIN_PROMPT_HEIGHT = 50;
+const PROGRESS_WIDGET_NAME = "$$node-text-preview";
+const PROGRESS_HEIGHT = 52;
 const VIEW_PROP = "h3_studio_prompt_view";
 const TOKEN_RE = /(@(?:Picture|Video|Audio|Model)\s*\d+(?::\d+)?|<(?:Picture|Video|Audio|Model)\s+\d+(?::\d+)?>)/gi;
 const PART_RE = /(<d>[\s\S]*?<\/d>|@(?:Picture|Video|Audio|Model)\s*\d+(?::\d+)?|<(?:Picture|Video|Audio|Model)\s+\d+(?::\d+)?>)/gi;
@@ -59,6 +64,44 @@ function ensureStyle() {
 .h3-studio-prompt-wrap.h3-native-vue-nodes .h3-studio-prompt-editor:focus {
   box-shadow: 0 0 0 1px var(--h3-native-widget-focus, var(--h3-native-widget-outline, rgba(255,255,255,.18)));
 }
+.lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) .lg-node-widgets,
+.lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) [data-testid="node-widgets"] {
+  flex: 1 1 auto !important; min-height: 0;
+}
+.lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) .lg-node-widget:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host),
+.lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) [data-testid="node-widget"]:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) {
+  min-height: 50px; min-width: 0;
+}
+.dom-widget.h3-studio-progress-pin,
+.dom-widget:has(.h3-studio-progress-pin) {
+  height: 52px !important; max-height: 52px !important;
+}
+.h3-studio-prompt-host {
+  display: flex; flex-direction: column; gap: 8px; width: 100%; height: 100%;
+  min-width: 0; min-height: 0; box-sizing: border-box;
+}
+.h3-studio-prompt-mode {
+  display: flex; flex: 0 0 auto; border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
+  overflow: hidden; background: rgba(0,0,0,.18);
+}
+.h3-studio-prompt-mode-btn {
+  flex: 1; appearance: none; display: flex; align-items: center; justify-content: center;
+  background: transparent; color: rgba(255,255,255,.62); border: 0; border-radius: 0;
+  padding: 6px 8px; cursor: pointer; font: 600 11px/1.2 system-ui, sans-serif;
+}
+.h3-studio-prompt-mode-btn + .h3-studio-prompt-mode-btn { border-left: 1px solid rgba(255,255,255,.12); }
+.h3-studio-prompt-mode-btn[aria-pressed="true"] { background: rgba(120,185,255,.22); color: #dff; }
+.h3-studio-prompt-stack {
+  display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; gap: 8px;
+}
+.h3-studio-prompt-field {
+  display: flex; flex-direction: column; flex: 1 1 0; min-height: 88px; min-width: 0; gap: 3px;
+}
+.h3-studio-prompt-field-label {
+  flex: 0 0 auto; color: rgba(255,255,255,.62); font: 600 11px/1.2 system-ui, sans-serif;
+  padding: 0 2px;
+}
+.h3-studio-prompt-field .h3-studio-prompt-wrap { flex: 1 1 auto; min-height: 72px; }
 .h3-studio-prompt-tools {
   position: absolute; right: 14px; bottom: 4px; z-index: 3; display: flex; align-items: center; gap: 3px; pointer-events: auto;
 }
@@ -212,6 +255,10 @@ function isPromptNode(node) {
     return [...targetNames(node)].some((name) => PROMPT_NODES.has(name));
 }
 
+function isAdvancedAutoChain(node) {
+    return targetNames(node).has(ADVANCED_AUTO_CHAIN);
+}
+
 function setWidgetOption(widget, key, value) {
     if (!widget) return;
     widget.options ||= {};
@@ -310,11 +357,177 @@ function findWidget(node, name) {
     return node?.widgets?.find((widget) => widget?.name === name);
 }
 
+function visualNodeHeight(node) {
+    const rendered = node?.renderingSize;
+    const renderedH = Array.isArray(rendered) ? Number(rendered[1]) : 0;
+    const body = Number(node?.bodyHeight);
+    const sizeH = Array.isArray(node?.size) ? Number(node.size[1]) : 0;
+    return Math.max(renderedH || 0, body || 0, sizeH || 0);
+}
+
+function widgetLayoutHeight(widget) {
+    if (!widget || widget.hidden || widget.type === "hidden") return 0;
+    if (typeof widget.computeSize === "function") {
+        const size = widget.computeSize(200);
+        const h = Array.isArray(size) ? Number(size[1]) : Number(size);
+        if (Number.isFinite(h) && h <= 0) return 0;
+        if (Number.isFinite(h) && h > 0) return h;
+    }
+    const computed = Number(widget.computedHeight);
+    if (Number.isFinite(computed) && computed > 0) return computed;
+    return globalThis.LiteGraph?.NODE_WIDGET_HEIGHT || 20;
+}
+
+function trailingWidgetsHeight(node, dom) {
+    const widgets = node?.widgets || [];
+    const idx = widgets.indexOf(dom);
+    if (idx < 0) return 0;
+    let height = 0;
+    for (let i = idx + 1; i < widgets.length; i++) height += widgetLayoutHeight(widgets[i]);
+    return height;
+}
+
+function remainingPromptHeight(node, dom) {
+    const nodeHeight = visualNodeHeight(node);
+    const y = Number(dom?.y ?? dom?.last_y);
+    const after = trailingWidgetsHeight(node, dom);
+    if (Number.isFinite(y) && y > 0 && y < nodeHeight) {
+        return Math.max(MIN_PROMPT_HEIGHT, Math.floor(nodeHeight - y - after));
+    }
+    return MIN_PROMPT_HEIGHT;
+}
+
+function isProgressWidget(widget) {
+    const name = String(widget?.name || "");
+    const type = String(widget?.type || "");
+    return name === PROGRESS_WIDGET_NAME || type === "progressText";
+}
+
+function pinProgressWidget(widget) {
+    if (!widget) return;
+    if (!widget.__h3PinnedProgress) {
+        widget.__h3PinnedProgress = true;
+        widget.hasLayoutSize = false;
+        widget.options ||= {};
+        widget.options.getMinHeight = () => PROGRESS_HEIGHT;
+        widget.options.getMaxHeight = () => PROGRESS_HEIGHT;
+        widget.computeLayoutSize = function () {
+            return { minHeight: PROGRESS_HEIGHT, maxHeight: PROGRESS_HEIGHT, minWidth: 0 };
+        };
+        widget.computeSize = function () {
+            return [200, PROGRESS_HEIGHT];
+        };
+    }
+    widget.computedHeight = PROGRESS_HEIGHT;
+    const el = widget.element;
+    el?.classList?.add("h3-studio-progress-pin");
+    const overlay = el?.closest?.(".dom-widget") || (el?.classList?.contains("dom-widget") ? el : null);
+    overlay?.classList?.add("h3-studio-progress-pin");
+    if (overlay?.style) {
+        overlay.style.height = `${PROGRESS_HEIGHT}px`;
+        overlay.style.maxHeight = `${PROGRESS_HEIGHT}px`;
+    }
+}
+
+function pinProgressWidgets(node) {
+    for (const widget of node?.widgets || []) {
+        if (isProgressWidget(widget)) pinProgressWidget(widget);
+    }
+}
+
+function installProgressPin(node) {
+    if (!node || node.__h3ProgressPin) return;
+    node.__h3ProgressPin = true;
+    const original = node.addCustomWidget;
+    if (typeof original === "function") {
+        node.addCustomWidget = function (widget, ...rest) {
+            const result = original.call(this, widget, ...rest);
+            pinProgressWidgets(this);
+            return result;
+        };
+    }
+    pinProgressWidgets(node);
+}
+
+function promptWidgetsGrid(wrap) {
+    return wrap?.closest?.("[data-testid='node-widgets'], .lg-node-widgets") || null;
+}
+
+function promptWidgetRow(wrap) {
+    return wrap?.closest?.("[data-testid='node-widget'], .lg-node-widget") || null;
+}
+
+function pinPromptGrid(wrap) {
+    const grid = promptWidgetsGrid(wrap);
+    if (!grid) return;
+    const row = promptWidgetRow(wrap);
+    let rows = [...grid.children].filter((el) => (
+        el.matches?.("[data-testid='node-widget'], .lg-node-widget")
+    ));
+    if (!rows.length) {
+        rows = [...grid.querySelectorAll(":scope > [data-testid='node-widget'], :scope > .lg-node-widget")];
+    }
+    const idx = row ? rows.indexOf(row) : -1;
+    const template = rows.map((_, i) => (i === idx ? "minmax(50px, 1fr)" : "min-content")).join(" ");
+    if (template && grid.style.getPropertyValue("grid-template-rows") !== template) {
+        grid.style.setProperty("grid-template-rows", template, "important");
+    }
+    grid.style.flex = "1 1 auto";
+    grid.style.minHeight = "0px";
+}
+
+function bindPromptWidgetSize(widget) {
+    if (!widget) return;
+    widget.options ||= {};
+    widget.options.getMinHeight = () => MIN_PROMPT_HEIGHT;
+    widget.options.getHeight = () => "100%";
+    widget.hasLayoutSize = true;
+    delete widget.options.getMaxHeight;
+    if (Object.hasOwn(widget, "computeSize")) delete widget.computeSize;
+    widget.computeLayoutSize = function () {
+        return { minHeight: MIN_PROMPT_HEIGHT, minWidth: 0 };
+    };
+}
+
+function syncPromptWidget(node, widget) {
+    const dom = widget || node.__h3DomWidget;
+    const wrap = node.__h3PromptHost || node.__h3EditorWrap;
+    if (!dom || !wrap) return;
+    pinProgressWidgets(node);
+    bindPromptWidgetSize(dom);
+    const y = Number(dom?.y ?? dom?.last_y);
+    const fill = remainingPromptHeight(node, dom);
+    const current = Number(dom.computedHeight) || 0;
+    if (Number.isFinite(y) && y > 0 && fill > current) dom.computedHeight = fill;
+    wrap.style.flex = "1 1 auto";
+    wrap.style.width = "100%";
+    wrap.style.minHeight = "0px";
+    wrap.style.height = "100%";
+    pinPromptGrid(node.__h3PromptHost || wrap);
+    applyNativeEditorTheme(wrap);
+}
+
+function installPromptSizeGuard(node) {
+    if (!node || node.__h3PromptSizeGuard) return;
+    node.__h3PromptSizeGuard = true;
+    const previousResize = node.onResize;
+    node.onResize = function (...args) {
+        const result = previousResize?.apply(this, args);
+        syncPromptWidget(this, this.__h3DomWidget);
+        return result;
+    };
+}
+
 function isRawView(node) {
+    const editor = node.__h3Editor;
+    if (editor && Object.prototype.hasOwnProperty.call(editor, "__h3RawView")) {
+        return Boolean(editor.__h3RawView);
+    }
     return String(node?.properties?.[VIEW_PROP] || "") === "raw";
 }
 
 function setRawView(node, raw) {
+    if (node.__h3Editor) node.__h3Editor.__h3RawView = !!raw;
     node.properties ||= {};
     node.properties[VIEW_PROP] = raw ? "raw" : "structured";
 }
@@ -960,12 +1173,19 @@ function repairCaretSinks(editor) {
 }
 
 function promptText(node) {
+    const editor = node.__h3Editor;
+    if (typeof editor?.__h3GetValue === "function") return String(editor.__h3GetValue() || "");
     if (typeof node?.__h3GetPromptText === "function") return String(node.__h3GetPromptText() || "");
     return String(findWidget(node, "prompt")?.value || "");
 }
 
 function setPromptText(node, text) {
     const next = String(text ?? "");
+    const editor = node.__h3Editor;
+    if (typeof editor?.__h3SetValue === "function") {
+        editor.__h3SetValue(next);
+        return;
+    }
     if (typeof node?.__h3SetPromptText === "function") {
         node.__h3SetPromptText(next);
         return;
@@ -1250,6 +1470,13 @@ function currentPrompt(node) {
 }
 
 function ensureHistory(node) {
+    const editor = node.__h3Editor;
+    if (editor) {
+        if (!editor.__h3PromptHistory) {
+            editor.__h3PromptHistory = { undo: [currentPrompt(node)], redo: [], applying: false };
+        }
+        return editor.__h3PromptHistory;
+    }
     if (!node.__h3PromptHistory) {
         node.__h3PromptHistory = { undo: [currentPrompt(node)], redo: [], applying: false };
     }
@@ -1257,7 +1484,9 @@ function ensureHistory(node) {
 }
 
 function resetHistory(node) {
-    node.__h3PromptHistory = { undo: [currentPrompt(node)], redo: [], applying: false };
+    const state = { undo: [currentPrompt(node)], redo: [], applying: false };
+    if (node.__h3Editor) node.__h3Editor.__h3PromptHistory = state;
+    else node.__h3PromptHistory = state;
 }
 
 function pushHistory(node) {
@@ -2379,7 +2608,7 @@ function bindEditor(node) {
     });
     editor.addEventListener("paste", (event) => pasteIntoEditor(node, event), true);
     editor.addEventListener("input", () => {
-        if (node.__h3PromptHistory?.applying || activeMenu?.picker?.applying) return;
+        if (editor.__h3PromptHistory?.applying || node.__h3PromptHistory?.applying || activeMenu?.picker?.applying) return;
         repairCaretSinks(editor);
         syncFromEditor(node);
         if (activeMenu?.picker?.mode === "replace") return;
@@ -2587,7 +2816,17 @@ function ensureBuilderThumbListener() {
     window.addEventListener("h3-studio-builder-changed", refreshAllPromptThumbs);
 }
 
-function createPromptEditorUi(node, { label = "prompt", placeholder = "" } = {}) {
+function activatePromptEditor(node, editor, wrap, viewButton) {
+    if (!node || !editor) return;
+    node.__h3Editor = editor;
+    node.__h3ActiveEditorWrap = wrap;
+    if (viewButton) node.__h3PromptViewButton = viewButton;
+    node.__h3RefreshPromptThumbs = () => refreshPromptThumbs(node);
+}
+
+function createPromptEditorUi(node, {
+    label = "prompt", placeholder = "", widgetName = "prompt", getValue, setValue,
+} = {}) {
     ensureStyle();
     patchLiteGraphPromptProcessKey();
     ensureBuilderThumbListener();
@@ -2603,6 +2842,17 @@ function createPromptEditorUi(node, { label = "prompt", placeholder = "" } = {})
     editor.setAttribute("aria-label", label);
     if (placeholder) editor.dataset.placeholder = placeholder;
     editor.spellcheck = false;
+    const read = typeof getValue === "function"
+        ? getValue
+        : () => String(findWidget(node, widgetName)?.value || "");
+    const write = typeof setValue === "function"
+        ? setValue
+        : (text) => {
+            const target = findWidget(node, widgetName);
+            if (target) target.value = text;
+        };
+    editor.__h3GetValue = read;
+    editor.__h3SetValue = write;
     const tools = document.createElement("div");
     tools.className = "h3-studio-prompt-tools";
     const viewButton = document.createElement("button");
@@ -2615,6 +2865,7 @@ function createPromptEditorUi(node, { label = "prompt", placeholder = "" } = {})
     viewButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        activatePromptEditor(node, editor, wrap, viewButton);
         togglePromptView(node);
     });
     tools.append(viewButton);
@@ -2633,20 +2884,21 @@ function createPromptEditorUi(node, { label = "prompt", placeholder = "" } = {})
     refreshButton.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
+        activatePromptEditor(node, editor, wrap, viewButton);
         refreshPromptThumbs(node);
     });
     topTools.append(refreshButton);
     wrap.append(editor, tools, topTools);
     wrap.addEventListener("pointerdown", (event) => {
         event.stopPropagation();
+        activatePromptEditor(node, editor, wrap, viewButton);
         if (event.target?.closest?.(".h3-mention-chip, .h3-dialogue-flag, .h3-mention-menu, .h3-chip-menu")) return;
         closeMenus();
     });
+    editor.addEventListener("focusin", () => activatePromptEditor(node, editor, wrap, viewButton));
     attachWheelHandler(wrap, editor);
-    node.__h3Editor = editor;
-    node.__h3EditorWrap = wrap;
-    node.__h3PromptViewButton = viewButton;
-    node.__h3RefreshPromptThumbs = () => refreshPromptThumbs(node);
+    activatePromptEditor(node, editor, wrap, viewButton);
+    if (!node.__h3EditorWrap) node.__h3EditorWrap = wrap;
     bindEditor(node);
     renderEditor(node);
     resetHistory(node);
@@ -2668,26 +2920,405 @@ function mountPromptEditor(node, host, options = {}) {
     const wrap = createPromptEditorUi(node, {
         label: options.label || "plan",
         placeholder: options.placeholder || "",
+        getValue: options.getValue,
+        setValue: options.setValue,
     });
+    node.__h3EditorWrap = wrap;
     host.replaceChildren(wrap);
     applyNativeEditorTheme(wrap);
+}
+
+function setPromptWidgetVisible(widget, visible) {
+    if (!widget) return;
+    widget.hidden = !visible;
+    setWidgetOption(widget, "hidden", visible ? undefined : true);
+    if (visible) {
+        delete widget.computeSize;
+        widget.computedHeight = undefined;
+        if (widget.inputEl) widget.inputEl.style.display = "";
+        if (widget.element) widget.element.style.display = "";
+    } else {
+        widget.computeSize = () => [0, -4];
+        widget.computedHeight = 0;
+        if (widget.inputEl) widget.inputEl.style.display = "none";
+        if (widget.element) widget.element.style.display = "none";
+    }
+}
+
+function setPromptInputHidden(node, name, hidden) {
+    const input = node.inputs?.find((slot) => slot?.name === name);
+    if (input) input.hidden = hidden;
+}
+
+function placeWidgetBefore(node, name, before) {
+    const widgets = node.widgets;
+    const widget = findWidget(node, name);
+    if (!widgets || !widget || !before) return;
+    const from = widgets.indexOf(widget);
+    const to = widgets.indexOf(before);
+    if (from < 0 || to < 0 || from === to - 1) return;
+    widgets.splice(from, 1);
+    widgets.splice(widgets.indexOf(before), 0, widget);
+}
+
+function isSeamlessLoopOn(node) {
+    const value = findWidget(node, "seamless_loop")?.value;
+    return value === true || value === "true" || value === 1;
+}
+
+function promptMode(node) {
+    const raw = String(findWidget(node, "prompt_mode")?.value || "single").trim().toLowerCase().replace(/\s+/g, "_");
+    return raw === "per_clip" ? "per_clip" : "single";
+}
+
+function setPromptMode(node, mode) {
+    const widget = findWidget(node, "prompt_mode");
+    const next = mode === "per_clip" ? "per_clip" : "single";
+    if (widget) widget.value = next;
+}
+
+function clampClipSegments(node) {
+    const raw = Number(findWidget(node, "segments")?.value);
+    const value = Number.isFinite(raw) ? Math.round(raw) : 3;
+    return Math.min(MAX_CLIP_PROMPTS, Math.max(1, value));
+}
+
+function clipPromptLabel(index, segments, isLoop) {
+    if (isLoop) return "Loop — return to Clip 1";
+    if (index === 1) return `Clip ${index} — Start`;
+    if (index === segments) return `Clip ${index} — Finish`;
+    return `Clip ${index} — Continue`;
+}
+
+function visibleClipEditors(node) {
+    if (promptMode(node) !== "per_clip") {
+        return [{ name: "prompt", label: "prompt" }];
+    }
+    const segments = clampClipSegments(node);
+    const fields = [];
+    for (let i = 1; i <= segments; i++) {
+        fields.push({ name: `prompt_${i}`, label: clipPromptLabel(i, segments, false) });
+    }
+    if (isSeamlessLoopOn(node)) {
+        fields.push({ name: "loop_prompt", label: clipPromptLabel(0, segments, true) });
+    }
+    return fields;
+}
+
+function parseHeaderTiming(text) {
+    let duration = null;
+    let segments = null;
+    let loop = null;
+    for (const line of String(text || "").split(/\r?\n/)) {
+        const match = line.trim().match(/^(duration|segments|loop)\s*:\s*(.+)$/i);
+        if (!match) continue;
+        const key = match[1].toLowerCase();
+        const raw = match[2].trim();
+        if (key === "duration") {
+            const value = Number(raw.replace(/s$/i, ""));
+            if (Number.isFinite(value)) duration = value;
+        } else if (key === "segments") {
+            const value = Number(raw);
+            if (Number.isFinite(value)) segments = Math.round(value);
+        } else if (key === "loop") {
+            loop = ["1", "true", "yes", "on"].includes(raw.toLowerCase());
+        }
+    }
+    return { duration, segments, loop };
+}
+
+function sharedSubjectsFromUnified(text) {
+    const header = String(text || "").replace(/\r\n/g, "\n").split(/^##\s+/m)[0] || "";
+    const match = header.match(/subject_definitions:\s*([\s\S]*?)\s*$/i);
+    return match ? match[1].trim() : "";
+}
+
+function withSharedSubjects(body, shared) {
+    const text = String(body || "").trim();
+    if (!shared || /^subject_definitions\s*:/im.test(text)) return text;
+    return `subject_definitions:\n${shared}\n\n${text}`.trim();
+}
+
+function splitUnifiedIntoClipWidgets(node) {
+    const text = String(findWidget(node, "prompt")?.value || "");
+    const timing = parseHeaderTiming(text);
+    const shared = sharedSubjectsFromUnified(text);
+    if (timing.duration != null && findWidget(node, "duration")) {
+        findWidget(node, "duration").value = timing.duration;
+    }
+    const parts = [];
+    let current = null;
+    for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+        const heading = line.trim().match(/^##\s+(?:Clip\s+(\d+)|Loop\b)/i);
+        if (heading) {
+            if (current) parts.push(current);
+            current = { index: heading[1] ? Number(heading[1]) : null, isLoop: !heading[1], lines: [] };
+            continue;
+        }
+        if (current) current.lines.push(line);
+    }
+    if (current) parts.push(current);
+    const story = parts.filter((part) => !part.isLoop);
+    if (timing.segments == null && story.length && findWidget(node, "segments")) {
+        findWidget(node, "segments").value = story.length;
+    } else if (timing.segments != null && findWidget(node, "segments")) {
+        findWidget(node, "segments").value = timing.segments;
+    }
+    const loopWidget = findWidget(node, "seamless_loop");
+    if (loopWidget) {
+        loopWidget.value = Boolean(timing.loop) || parts.some((part) => part.isLoop);
+    }
+    if (!parts.length) {
+        const first = findWidget(node, "prompt_1");
+        if (first && text.trim()) first.value = text.trim();
+        return;
+    }
+    for (const part of parts) {
+        const body = withSharedSubjects(part.lines.join("\n").trim(), shared);
+        if (part.isLoop) {
+            const widget = findWidget(node, "loop_prompt");
+            if (widget) widget.value = body;
+        } else if (part.index) {
+            const widget = findWidget(node, `prompt_${part.index}`);
+            if (widget) widget.value = body;
+        }
+    }
+}
+
+function composeUnifiedFromClipWidgets(node) {
+    const prompt = findWidget(node, "prompt");
+    if (!prompt) return;
+    const segments = clampClipSegments(node);
+    const loop = isSeamlessLoopOn(node);
+    const duration = Number(findWidget(node, "duration")?.value || 10);
+    const bodies = [];
+    for (let i = 1; i <= segments; i++) {
+        const text = String(findWidget(node, `prompt_${i}`)?.value || "").trim();
+        if (text) bodies.push({ i, text });
+    }
+    const loopText = String(findWidget(node, "loop_prompt")?.value || "").trim();
+    if (!bodies.length && !loopText) return;
+    const lines = [
+        "H3 Studio prompt",
+        "mode: auto_chain",
+        `duration: ${duration.toFixed(2)}`,
+        `segments: ${segments}`,
+        `loop: ${loop ? "true" : "false"}`,
+        "",
+    ];
+    const first = bodies[0]?.text || "";
+    const subjectMatch = first.match(/subject_definitions:\s*([\s\S]*?)(?=^summary\s*:)/im);
+    if (subjectMatch) lines.push("subject_definitions:", subjectMatch[1].trim(), "");
+    for (const body of bodies) {
+        const role = body.i === 1 ? "Start" : body.i === segments ? "Finish" : "Continue";
+        lines.push(
+            `## Clip ${body.i} — ${role}`,
+            body.text.replace(/^subject_definitions:[\s\S]*?(?=^summary\s*:)/im, "").trim(),
+            "",
+        );
+    }
+    if (loop && loopText) lines.push("## Loop — return to Clip 1", loopText, "");
+    prompt.value = `${lines.join("\n").trim()}\n`;
+}
+
+function hideNativeClipPromptWidgets(node) {
+    hideOriginalPromptWidget(findWidget(node, "prompt_mode"));
+    for (let i = 1; i <= MAX_CLIP_PROMPTS; i++) {
+        setPromptWidgetVisible(findWidget(node, `prompt_${i}`), false);
+    }
+    setPromptWidgetVisible(findWidget(node, "loop_prompt"), false);
+}
+
+function syncAdvancedTimingWidgets(node, perClip) {
+    for (const name of ["duration", "segments", "seamless_loop"]) {
+        setPromptWidgetVisible(findWidget(node, name), perClip);
+        setPromptInputHidden(node, name, !perClip);
+    }
+    const host = node.__h3DomWidget;
+    if (perClip && host) {
+        placeWidgetBefore(node, "duration", host);
+        placeWidgetBefore(node, "segments", host);
+        placeWidgetBefore(node, "seamless_loop", host);
+    }
+}
+
+function wrapAdvancedTimingCallback(node, name) {
+    const widget = findWidget(node, name);
+    if (!widget || widget.__h3AdvancedHostGuard) return;
+    widget.__h3AdvancedHostGuard = true;
+    const original = widget.callback;
+    widget.callback = function (...args) {
+        const result = original?.apply(this, args);
+        queueMicrotask(() => syncAdvancedPromptHost(node));
+        return result;
+    };
+}
+
+function mountClipEditorField(node, stack, field) {
+    const box = document.createElement("div");
+    box.className = "h3-studio-prompt-field";
+    if (field.name !== "prompt") {
+        const label = document.createElement("div");
+        label.className = "h3-studio-prompt-field-label";
+        label.textContent = field.label;
+        box.appendChild(label);
+    }
+    box.appendChild(createPromptEditorUi(node, { label: field.label, widgetName: field.name }));
+    stack.appendChild(box);
+}
+
+function syncAdvancedPromptHost(node) {
+    if (!isAdvancedAutoChain(node)) return;
+    const host = node.__h3PromptHost;
+    if (!host) return;
+    wrapAdvancedTimingCallback(node, "segments");
+    wrapAdvancedTimingCallback(node, "seamless_loop");
+    hideNativeClipPromptWidgets(node);
+    hideOriginalPromptWidget(findWidget(node, "prompt"));
+    const mode = promptMode(node);
+    const perClip = mode === "per_clip";
+    syncAdvancedTimingWidgets(node, perClip);
+    host.querySelectorAll("[data-mode]").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.dataset.mode === mode ? "true" : "false");
+    });
+    const fields = visibleClipEditors(node);
+    const key = fields.map((field) => field.name).join("|");
+    const stack = host.querySelector(".h3-studio-prompt-stack");
+    if (!stack) return;
+    if (node.__h3PromptHostKey === key && stack.childElementCount === fields.length) {
+        [...stack.children].forEach((box, i) => {
+            const label = box.querySelector(".h3-studio-prompt-field-label");
+            if (label) label.textContent = fields[i].label;
+        });
+        return;
+    }
+    node.__h3PromptHostKey = key;
+    stack.replaceChildren();
+    for (const field of fields) mountClipEditorField(node, stack, field);
+    node._widgetSlotsDirty = true;
+    node.setDirtyCanvas?.(true, true);
+}
+
+function switchAdvancedPromptMode(node, mode) {
+    const next = mode === "per_clip" ? "per_clip" : "single";
+    if (next === promptMode(node)) return;
+    if (next === "per_clip") splitUnifiedIntoClipWidgets(node);
+    else composeUnifiedFromClipWidgets(node);
+    setPromptMode(node, next);
+    node.__h3PromptHostKey = "";
+    syncAdvancedPromptHost(node);
+    restoreNodeSizeSoon(node);
+}
+
+function ensureAdvancedPromptHost(node) {
+    if (node.__h3PromptHost && node.__h3DomWidget && findWidget(node, "h3_prompt_mentions")) {
+        syncAdvancedPromptHost(node);
+        return node.__h3DomWidget;
+    }
+    ensureStyle();
+    const host = document.createElement("div");
+    host.className = "h3-studio-prompt-host";
+    const modeBar = document.createElement("div");
+    modeBar.className = "h3-studio-prompt-mode";
+    modeBar.setAttribute("role", "group");
+    modeBar.setAttribute("aria-label", "Prompt layout");
+    for (const [id, label] of [["single", "Single prompt"], ["per_clip", "One prompt per clip"]]) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "h3-studio-prompt-mode-btn";
+        btn.dataset.mode = id;
+        btn.textContent = label;
+        btn.addEventListener("pointerdown", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+        });
+        btn.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            switchAdvancedPromptMode(node, id);
+        });
+        modeBar.appendChild(btn);
+    }
+    const stack = document.createElement("div");
+    stack.className = "h3-studio-prompt-stack";
+    host.append(modeBar, stack);
+    node.__h3PromptHost = host;
+    node.__h3EditorWrap = host;
+    const prompt = findWidget(node, "prompt");
+    hideOriginalPromptWidget(prompt);
+    const domWidget = node.addDOMWidget("h3_prompt_mentions", "h3_prompt_mentions", host, {
+        getValue: () => String(findWidget(node, "prompt")?.value || ""),
+        setValue: (value) => {
+            const widget = findWidget(node, "prompt");
+            if (widget) widget.value = value;
+        },
+        margin: 10,
+        serialize: false,
+        getMinHeight: () => 50,
+        getHeight: () => "100%",
+        afterResize: () => {
+            syncPromptWidget(node, node.__h3DomWidget);
+            node._widgetSlotsDirty = true;
+            node.setDirtyCanvas?.(true, true);
+        },
+        onDraw: (drawn) => syncPromptWidget(node, drawn),
+    });
+    if (!domWidget) return null;
+    node.__h3DomWidget = domWidget;
+    domWidget.serialize = false;
+    setWidgetOption(domWidget, "serialize", false);
+    bindPromptWidgetSize(domWidget);
+    installPromptSizeGuard(node);
+    installProgressPin(node);
+    const promptIndex = node.widgets?.indexOf(prompt) ?? -1;
+    const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
+    if (domIndex >= 0 && promptIndex >= 0 && domIndex !== promptIndex + 1) {
+        node.widgets.splice(domIndex, 1);
+        node.widgets.splice(node.widgets.indexOf(prompt) + 1, 0, domWidget);
+    }
+    hideOriginalPromptWidget(prompt);
+    syncAdvancedPromptHost(node);
+    syncPromptWidget(node, domWidget);
+    node._widgetSlotsDirty = true;
+    node.setDirtyCanvas?.(true, true);
+    restoreNodeSizeSoon(node);
+    return domWidget;
 }
 
 function installPromptEditor(node) {
     if (!isPromptNode(node) || typeof node.addDOMWidget !== "function") return;
     const widget = findWidget(node, "prompt");
     if (!widget) return;
+    node.__h3GetInventory = () => collectedInventory(node, linkedBuilder(node));
+    if (isAdvancedAutoChain(node)) {
+        hideOriginalPromptWidget(widget);
+        if (promptMode(node) !== "per_clip") migrateAdvancedPrompt(node);
+        if (node.__h3PromptHost && node.__h3DomWidget && findWidget(node, "h3_prompt_mentions")) {
+            installPromptSizeGuard(node);
+            installProgressPin(node);
+            syncAdvancedPromptHost(node);
+            syncPromptWidget(node, node.__h3DomWidget);
+            restoreNodeSizeSoon(node);
+            return;
+        }
+        removePromptEditorWidgets(node);
+        ensureAdvancedPromptHost(node);
+        return;
+    }
     if (node.__h3Editor && node.__h3DomWidget && findWidget(node, "h3_prompt_mentions")) {
         hideOriginalPromptWidget(widget);
         node.__h3RefreshPromptThumbs = () => refreshPromptThumbs(node);
+        installPromptSizeGuard(node);
+        installProgressPin(node);
+        syncPromptWidget(node, node.__h3DomWidget);
         restoreNodeSizeSoon(node);
         return;
     }
     migrateAdvancedPrompt(node);
     removePromptEditorWidgets(node);
     hideOriginalPromptWidget(widget);
-    node.__h3GetInventory = () => collectedInventory(node, linkedBuilder(node));
     const wrap = createPromptEditorUi(node, { label: "prompt" });
+    node.__h3EditorWrap = wrap;
     const domWidget = node.addDOMWidget("h3_prompt_mentions", "h3_prompt_mentions", wrap, {
         getValue: () => promptText(node),
         setValue: (value) => {
@@ -2698,17 +3329,21 @@ function installPromptEditor(node) {
         margin: 10,
         serialize: false,
         getMinHeight: () => 50,
+        getHeight: () => "100%",
         afterResize: () => {
-            applyNativeEditorTheme(wrap);
+            syncPromptWidget(node, node.__h3DomWidget);
             node._widgetSlotsDirty = true;
             node.setDirtyCanvas?.(true, true);
         },
-        onDraw: () => applyNativeEditorTheme(wrap),
+        onDraw: (drawn) => syncPromptWidget(node, drawn),
     });
     if (!domWidget) return;
     node.__h3DomWidget = domWidget;
     domWidget.serialize = false;
     setWidgetOption(domWidget, "serialize", false);
+    bindPromptWidgetSize(domWidget);
+    installPromptSizeGuard(node);
+    installProgressPin(node);
     const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
     const promptIndex = node.widgets?.indexOf(widget) ?? -1;
     if (domIndex >= 0 && promptIndex >= 0 && domIndex !== promptIndex + 1) {
@@ -2717,6 +3352,7 @@ function installPromptEditor(node) {
         node.widgets.splice(nextPromptIndex + 1, 0, domWidget);
     }
     hideOriginalPromptWidget(widget);
+    syncPromptWidget(node, domWidget);
     node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
     restoreNodeSizeSoon(node);
@@ -2750,6 +3386,23 @@ app.registerExtension({
             });
             return result;
         };
+        const originalAddCustomWidget = nodeType.prototype.addCustomWidget;
+        nodeType.prototype.addCustomWidget = function (widget, ...rest) {
+            const result = originalAddCustomWidget?.call(this, widget, ...rest) ?? widget;
+            pinProgressWidgets(this);
+            return result;
+        };
+        if (nodeData?.name === ADVANCED_AUTO_CHAIN) {
+            const originalOnWidgetChanged = nodeType.prototype.onWidgetChanged;
+            nodeType.prototype.onWidgetChanged = function (name, value, oldValue, widget) {
+                const result = originalOnWidgetChanged?.apply(this, arguments);
+                const widgetName = widget?.name ?? name;
+                if (widgetName === "segments" || widgetName === "seamless_loop" || widgetName === "prompt_mode") {
+                    queueMicrotask(() => syncAdvancedPromptHost(this));
+                }
+                return result;
+            };
+        }
     },
 
     async nodeCreated(node) {

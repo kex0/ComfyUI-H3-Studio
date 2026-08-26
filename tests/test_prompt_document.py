@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prompt_document import (
     assemble_auto_chain_document,
+    document_has_loop,
     duration_and_segments_from_pack_or_prompt,
     expand_clip,
     looks_like_unified,
@@ -196,3 +197,19 @@ def test_duration_and_segments_from_pack_or_prompt():
         assert "duration is missing" in str(exc)
     else:
         raise AssertionError("expected missing duration to fail")
+
+
+def test_document_has_loop_and_per_clip_resolve():
+    assert document_has_loop(DOC) is False
+    assert document_has_loop("not a prompt") is False
+    looped = DOC.replace("loop: false", "loop: true") + "\n## Loop — return to Clip 1\nsummary:\nback\n"
+    assert document_has_loop(looped) is True
+    bodies, loop = resolve_auto_chain_prompts(
+        "",
+        segments=2,
+        loop=True,
+        loop_prompt="loop body",
+        kwargs={"prompt_1": "clip one", "prompt_2": "clip two"},
+    )
+    assert bodies == ["clip one", "clip two"]
+    assert loop == "loop body"

@@ -60,6 +60,30 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "h3-studio-prompt-wrap" in editor
     assert "h3_prompt_mentions" in editor
     assert "getMinHeight: () => 50" in editor
+    assert "getHeight: () => \"100%\"" in editor
+    assert "remainingPromptHeight" in editor
+    assert "bindPromptWidgetSize" in editor
+    assert "syncPromptWidget" in editor
+    assert "visualNodeHeight" in editor
+    assert "trailingWidgetsHeight" in editor
+    assert "installPromptSizeGuard" in editor
+    assert "computedHeight" in editor
+    assert "computeLayoutSize" in editor
+    assert "pinPromptGrid" in editor
+    assert "minmax(50px, 1fr)" in editor
+    assert "lg-node-widgets" in editor
+    assert "hasLayoutSize = true" in editor
+    assert "pinProgressWidget" in editor
+    assert "$$node-text-preview" in editor
+    assert "progressText" in editor
+    assert "h3-studio-progress-pin" in editor
+    assert "function isAdvancedAutoChain" in editor
+    assert "h3-studio-prompt-mode" in editor
+    assert "One prompt per clip" in editor
+    assert "Single prompt" in editor
+    assert "syncAdvancedPromptHost" in editor
+    assert "MAX_CLIP_PROMPTS = 12" in editor
+    assert "prompt_mode" in editor
     assert "hideOriginalPromptWidget" in editor
     assert "listedWidgetValues" in editor
     assert "dropDomWidgetValue" in editor
@@ -178,6 +202,11 @@ def test_auto_chain_returns_images_and_audio_first():
     adv = text.split("class H3StudioAutoChainAdvanced", 1)[1]
     assert 'required.pop("loop_prompt"' in adv
     assert 'required.pop(f"prompt_{i}"' in adv
+    assert "prompt_mode" in adv
+    assert "document_has_loop" in adv
+    assert 'kwargs["prompt"] = ""' in adv
+    assert 'kwargs["seamless_loop"] = document_has_loop' in adv
+    assert 'optional["prompt_mode"]' in adv
     assert "def _clip_role" in text
     assert "combined_images" not in text
     assert "save_clip_videos" in text

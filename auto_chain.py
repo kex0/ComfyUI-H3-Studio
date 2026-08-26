@@ -719,18 +719,22 @@ class H3StudioAutoChainAdvanced(H3StudioAutoChain):
         base = H3StudioAutoChain.INPUT_TYPES()
         required = dict(base["required"])
         required.pop("model_1", None)
-        required.pop("duration", None)
-        required.pop("segments", None)
-        required.pop("loop_prompt", None)
+        duration_spec = required.pop("duration", None)
+        segments_spec = required.pop("segments", None)
+        loop_prompt_spec = required.pop("loop_prompt", None)
+        prompt_specs = {}
         for i in range(1, MAX_SEGMENTS + 1):
-            required.pop(f"prompt_{i}", None)
+            spec = required.pop(f"prompt_{i}", None)
+            if spec:
+                prompt_specs[f"prompt_{i}"] = spec
         ordered = {
             "pack": ("H3_STUDIO_PACK", {
                 "tooltip": (
                     "Pack from H3 Studio Builder: enabled models plus image/video/audio refs. "
-                    "Duration and clip count come from the prompt, or from this pack. "
-                    "Per-clip <Model N> / <Picture N> / <Video N> / <Audio N> select a subset; "
-                    "otherwise Model 1 and the first refs that fit the H3 caps are used."
+                    "In single-prompt mode, duration, clip count, and loop come from the prompt, "
+                    "or duration/clip count from this pack. Per-clip <Model N> / <Picture N> / "
+                    "<Video N> / <Audio N> select a subset; otherwise Model 1 and the first refs "
+                    "that fit the H3 caps are used."
                 ),
             }),
         }
@@ -739,6 +743,20 @@ class H3StudioAutoChainAdvanced(H3StudioAutoChain):
             key: spec for key, spec in dict(base.get("optional") or {}).items()
             if not key.startswith("reference_image") and not key.startswith("model_")
         }
+        if duration_spec:
+            optional["duration"] = duration_spec
+        if segments_spec:
+            optional["segments"] = segments_spec
+        optional.update(prompt_specs)
+        if loop_prompt_spec:
+            optional["loop_prompt"] = loop_prompt_spec
+        optional["prompt_mode"] = (["single", "per_clip"], {
+            "default": "single",
+            "tooltip": (
+                "single: one H3 Studio prompt with ## Clip sections. "
+                "per_clip: duration, segments, and seamless_loop widgets plus one prompt per clip."
+            ),
+        })
         return {
             "required": ordered,
             "optional": optional,
@@ -747,21 +765,34 @@ class H3StudioAutoChainAdvanced(H3StudioAutoChain):
 
     DESCRIPTION = (
         "Auto Chain with a Builder pack: per-clip model and Ref2VA image/video/audio refs from "
-        "prompt tags. Duration and clip count come from the prompt, or from the Builder pack. "
-        "Same Start / Continue / stitch loop as Auto Chain. Wire Builder → pack; "
-        "do not use the original Auto Chain sockets."
+        "prompt tags. Single-prompt mode reads duration, clip count, and loop from the prompt "
+        "(or duration/clip count from the Builder pack). One-prompt-per-clip mode shows those "
+        "widgets again. Wire Builder → pack; do not use the original Auto Chain sockets."
     )
 
-    def generate(self, pack, **kwargs):
+    def generate(self, pack, prompt_mode="single", **kwargs):
         from .pack import require_pack
-        from .prompt_document import duration_and_segments_from_pack_or_prompt
-        pack = require_pack(pack)
-        duration, segments = duration_and_segments_from_pack_or_prompt(
-            pack, kwargs.get("prompt") or "", need_segments=True,
+        from .prompt_document import (
+            document_has_loop, duration_and_segments_from_pack_or_prompt,
         )
+        pack = require_pack(pack)
+        mode = str(prompt_mode or "single").strip().lower().replace(" ", "_")
+        if mode == "per_clip":
+            if kwargs.get("duration") is None:
+                raise ValueError("h3_studio: duration is missing")
+            if kwargs.get("segments") is None:
+                raise ValueError("h3_studio: segments is missing")
+            kwargs["duration"] = float(kwargs["duration"])
+            kwargs["segments"] = int(kwargs["segments"])
+            kwargs["prompt"] = ""
+        else:
+            duration, segments = duration_and_segments_from_pack_or_prompt(
+                pack, kwargs.get("prompt") or "", need_segments=True,
+            )
+            kwargs["duration"] = duration
+            kwargs["segments"] = segments
+            kwargs["seamless_loop"] = document_has_loop(kwargs.get("prompt") or "")
         kwargs["pack"] = pack
         kwargs["model_1"] = pack["models"][0]["model"]
-        kwargs["duration"] = duration
-        kwargs["segments"] = segments
         return super().generate(**kwargs)
 
