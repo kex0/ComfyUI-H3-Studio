@@ -61,6 +61,9 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "h3_prompt_mentions" in editor
     assert "getMinHeight: () => 50" in editor
     assert "hideOriginalPromptWidget" in editor
+    assert "listedWidgetValues" in editor
+    assert "dropDomWidgetValue" in editor
+    assert 'widget.type = "hidden"' not in editor
     assert "togglePromptView" in editor
     assert "comfy-multiline-input" in editor
     assert "insertPlainText" in editor

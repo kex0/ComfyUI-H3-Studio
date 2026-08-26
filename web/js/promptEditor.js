@@ -258,16 +258,39 @@ function applyNativeEditorTheme(element) {
     element.style.setProperty("--h3-native-widget-text-size", "var(--comfy-textarea-font-size, 12px)");
 }
 
+const SKIP_SERIALIZE = new Set(["h3_prompt_editor", "h3_prompt_mentions"]);
+
 function hideOriginalPromptWidget(widget) {
     if (!widget) return;
     widget.hidden = true;
-    widget.type = "hidden";
+    widget.serialize = true;
     widget.computeSize = () => [0, -4];
     widget.computedHeight = 0;
     setWidgetOption(widget, "hidden", true);
-    setWidgetOption(widget, "canvasOnly", true);
     if (widget.inputEl) widget.inputEl.style.display = "none";
     if (widget.element) widget.element.style.display = "none";
+}
+
+function isSerializedDefWidget(widget) {
+    if (!widget || SKIP_SERIALIZE.has(widget.name)) return false;
+    if (widget.serialize === false) return false;
+    if (widget.options?.serialize === false) return false;
+    return true;
+}
+
+function listedWidgetValues(node) {
+    return (node.widgets || []).filter(isSerializedDefWidget).map((widget) => widget.value);
+}
+
+function dropDomWidgetValue(node, values) {
+    if (!Array.isArray(values)) return values;
+    const expected = (node.widgets || []).filter(isSerializedDefWidget);
+    if (values.length !== expected.length + 1) return values;
+    const promptIndex = expected.findIndex((widget) => widget.name === "prompt");
+    if (promptIndex < 0) return values;
+    const next = values.slice();
+    next.splice(promptIndex + 1, 1);
+    return next;
 }
 
 function linkedBuilder(node) {
@@ -2686,7 +2709,6 @@ function installPromptEditor(node) {
     node.__h3DomWidget = domWidget;
     domWidget.serialize = false;
     setWidgetOption(domWidget, "serialize", false);
-    setWidgetOption(domWidget, "canvasOnly", false);
     const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
     const promptIndex = node.widgets?.indexOf(widget) ?? -1;
     if (domIndex >= 0 && promptIndex >= 0 && domIndex !== promptIndex + 1) {
@@ -2705,6 +2727,19 @@ app.registerExtension({
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (!PROMPT_NODES.has(nodeData?.name)) return;
+        const originalSerialize = nodeType.prototype.serialize;
+        nodeType.prototype.serialize = function () {
+            const info = originalSerialize?.apply(this, arguments);
+            if (info) info.widgets_values = listedWidgetValues(this);
+            return info;
+        };
+        const originalConfigure = nodeType.prototype.configure;
+        nodeType.prototype.configure = function (info, ...rest) {
+            if (Array.isArray(info?.widgets_values)) {
+                info.widgets_values = dropDomWidgetValue(this, info.widgets_values);
+            }
+            return originalConfigure?.apply(this, [info, ...rest]);
+        };
         const originalOnConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info, ...rest) {
             captureNodeSize(this, info?.size);
