@@ -117,6 +117,13 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "comfy-multiline-input" in editor
     assert "insertPlainText" in editor
     assert "pasteIntoEditor" in editor
+    assert "createDocumentFragment" in editor
+    assert "IntersectionObserver" in editor
+    assert "hydrateChipThumb" in editor
+    assert "inventoryIndex" in editor
+    assert "lookupInventoryItem" in editor
+    assert "__h3SuppressInput" in editor
+    assert "iconThumb" in editor
     assert 'editor.addEventListener("paste"' in editor
     assert "stopImmediatePropagation" in editor
     assert "insertMentionChip" in editor

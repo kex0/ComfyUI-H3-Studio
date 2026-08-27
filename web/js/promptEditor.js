@@ -737,28 +737,85 @@ function kindKey(kind) {
     return normalizeKind(kind);
 }
 
+const ICON_THUMB_TEMPLATES = new Map();
+let chipThumbObserver = null;
+
+function iconThumb(kind, className) {
+    const key = `${className}:${kind || "image"}`;
+    let template = ICON_THUMB_TEMPLATES.get(key);
+    if (!template) {
+        template = document.createElement("span");
+        template.className = `${className} h3-kind-${kind || "image"}`;
+        template.setAttribute("aria-hidden", "true");
+        template.innerHTML = kindIconSvg(kind);
+        ICON_THUMB_TEMPLATES.set(key, template);
+    }
+    return template.cloneNode(true);
+}
+
+function ensureChipThumbObserver() {
+    if (chipThumbObserver || typeof IntersectionObserver !== "function") return chipThumbObserver;
+    chipThumbObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (!entry.isIntersecting) continue;
+            chipThumbObserver.unobserve(entry.target);
+            hydrateChipThumb(entry.target);
+        }
+    }, { rootMargin: "160px" });
+    return chipThumbObserver;
+}
+
+function attachThumbImage(wrap, item, menu) {
+    const img = document.createElement("img");
+    img.src = item.thumb;
+    img.alt = "";
+    img.draggable = false;
+    img.loading = "lazy";
+    img.decoding = "async";
+    wrap.replaceChildren(img);
+    img.addEventListener("error", () => {
+        wrap.replaceWith(makeThumb({ ...item, thumb: "" }, menu));
+    }, { once: true });
+    if (hasImageCrop(item)) applyCropThumb(img, item.crop);
+}
+
+function hydrateChipThumb(wrap) {
+    const url = wrap?.dataset?.thumb;
+    if (!url || !wrap.isConnected) return;
+    let crop = null;
+    try {
+        crop = wrap.dataset.crop ? JSON.parse(wrap.dataset.crop) : null;
+    } catch {
+        crop = null;
+    }
+    delete wrap.dataset.thumb;
+    delete wrap.dataset.crop;
+    attachThumbImage(wrap, { kind: "Picture", thumb: url, crop }, false);
+}
+
+function observeChipThumb(wrap) {
+    const observer = ensureChipThumbObserver();
+    if (observer) observer.observe(wrap);
+    else hydrateChipThumb(wrap);
+}
+
 function makeThumb(item, menu) {
     const className = menu ? "h3-mention-menu-thumb" : "h3-mention-chip-thumb";
     const kind = kindKey(item?.kind);
     if (kind === "image" && item?.thumb) {
         const wrap = document.createElement("span");
         wrap.className = `${className} h3-kind-image`;
-        const img = document.createElement("img");
-        img.src = item.thumb;
-        img.alt = "";
-        img.draggable = false;
-        wrap.appendChild(img);
-        img.addEventListener("error", () => {
-            wrap.replaceWith(makeThumb({ ...item, thumb: "" }, menu));
-        }, { once: true });
-        if (hasImageCrop(item)) applyCropThumb(img, item.crop);
+        if (menu) {
+            attachThumbImage(wrap, item, true);
+            return wrap;
+        }
+        wrap.dataset.thumb = item.thumb;
+        if (hasImageCrop(item)) wrap.dataset.crop = JSON.stringify(item.crop);
+        wrap.appendChild(iconThumb("image", className));
+        observeChipThumb(wrap);
         return wrap;
     }
-    const icon = document.createElement("span");
-    icon.className = `${className} h3-kind-${kind || "image"}`;
-    icon.setAttribute("aria-hidden", "true");
-    icon.innerHTML = kindIconSvg(kind);
-    return icon;
+    return iconThumb(kind, className);
 }
 
 function fillMenuButton(btn, spec) {
@@ -804,34 +861,64 @@ function chipFor(item) {
 }
 
 function fillPlain(editor, text) {
-    editor.replaceChildren();
+    const frag = document.createDocumentFragment();
     String(text || "").split("\n").forEach((line, index) => {
-        if (index) editor.appendChild(document.createElement("br"));
-        if (line) editor.appendChild(document.createTextNode(line));
+        if (index) frag.appendChild(document.createElement("br"));
+        if (line) frag.appendChild(document.createTextNode(line));
     });
+    editor.replaceChildren(frag);
+}
+
+function inventoryIndex(inventory) {
+    if (inventory instanceof Map) return inventory;
+    const map = new Map();
+    for (const item of inventory || []) {
+        if (!item?.kind || item.index == null) continue;
+        map.set(`${item.kind}:${item.index}`, item);
+    }
+    return map;
+}
+
+function lookupInventoryItem(inventory, tag) {
+    if (!tag) return tag;
+    const key = `${tag.kind}:${tag.index}`;
+    if (inventory instanceof Map) return inventory.get(key) || tag;
+    if (Array.isArray(inventory)) {
+        return inventory.find((entry) => entry.kind === tag.kind && entry.index === tag.index) || tag;
+    }
+    return tag;
+}
+
+function appendChip(host, tag, inventory) {
+    const item = lookupInventoryItem(inventory, tag);
+    const chip = chipFor({
+        ...item, ...tag, token: tag.token, segment: tag.segment,
+        segmentCount: item.segmentCount || tag.segment,
+    });
+    if (needsCaretSinkFrom(host.lastChild)) host.appendChild(makeCaretSink());
+    host.appendChild(chip);
+    return chip;
 }
 
 function fillEditor(editor, text, inventory) {
-    editor.replaceChildren();
+    const lookup = inventoryIndex(inventory);
+    const frag = document.createDocumentFragment();
     const parts = String(text || "").split(PART_RE);
     for (const part of parts) {
         if (!part) continue;
         const dialogue = parseDialoguePart(part);
         if (dialogue != null) {
-            editor.appendChild(makeDialogueBlock(dialogue, inventory));
+            frag.appendChild(makeDialogueBlock(dialogue, lookup));
             continue;
         }
         const tag = parseTag(part);
         if (!tag) {
-            fillPlainChunk(editor, part);
+            fillPlainChunk(frag, part);
             continue;
         }
-        const item = inventory.find((entry) => entry.kind === tag.kind && entry.index === tag.index) || tag;
-        editor.appendChild(chipFor({
-            ...item, ...tag, token: tag.token, segment: tag.segment,
-            segmentCount: item.segmentCount || tag.segment,
-        }));
+        appendChip(frag, tag, lookup);
     }
+    editor.replaceChildren(frag);
     repairCaretSinks(editor);
 }
 
@@ -956,6 +1043,7 @@ function makeDialogueBlock(value = "", inventory = []) {
     block.spellcheck = false;
     block.dataset.dialogue = "true";
     applyDialogueLanguage(block, parsed.language);
+    const lookup = inventoryIndex(inventory);
     const parts = String(parsed.body || "").split(TOKEN_RE);
     for (const part of parts) {
         if (!part) continue;
@@ -964,11 +1052,7 @@ function makeDialogueBlock(value = "", inventory = []) {
             fillPlainChunk(block, part);
             continue;
         }
-        const item = inventory.find((entry) => entry.kind === tag.kind && entry.index === tag.index) || tag;
-        block.appendChild(chipFor({
-            ...item, ...tag, token: tag.token, segment: tag.segment,
-            segmentCount: item.segmentCount || tag.segment,
-        }));
+        appendChip(block, tag, lookup);
     }
     ensureDialogueInnerCaret(block);
     return block;
@@ -2637,13 +2721,38 @@ function pasteIntoEditor(node, event) {
     if (!editor) return;
     const text = event.clipboardData?.getData("text/plain") || "";
     if (!text) return;
+    const tagged = !isRawView(node) && /<(?:Picture|Video|Audio|Model)\s+\d+(?::\d+)?>|@(?:Picture|Video|Audio|Model)\s*\d+(?::\d+)?|<d>[\s\S]*?<\/d>/i.test(text);
+    if (tagged) {
+        let prefix = "";
+        let suffix = "";
+        const range = editorSelectionRange(editor);
+        if (range) {
+            expandRangeToChips(range);
+            try {
+                const pre = document.createRange();
+                pre.selectNodeContents(editor);
+                pre.setEnd(range.startContainer, range.startOffset);
+                prefix = pre.collapsed ? "" : serializeRange(pre);
+                const post = document.createRange();
+                post.selectNodeContents(editor);
+                post.setStart(range.endContainer, range.endOffset);
+                suffix = post.collapsed ? "" : serializeRange(post);
+            } catch {
+                prefix = serializeEditor(editor);
+            }
+        } else {
+            prefix = serializeEditor(editor);
+        }
+        editor.__h3SuppressInput = true;
+        setPromptText(node, `${prefix}${text}${suffix}`);
+        renderEditor(node);
+        placeCaretAtSerializedOffset(editor, prefix.length + text.length);
+        pushHistory(node);
+        queueMicrotask(() => { editor.__h3SuppressInput = false; });
+        return;
+    }
     insertPlainText(editor, text);
     syncFromEditor(node);
-    if (!isRawView(node) && /<(?:Picture|Video|Audio|Model)\s+\d+(?::\d+)?>|@(?:Picture|Video|Audio|Model)\s*\d+(?::\d+)?|<d>[\s\S]*?<\/d>/i.test(text)) {
-        const offset = serializedOffsetAtCaret(editor);
-        renderEditor(node);
-        placeCaretAtSerializedOffset(editor, offset);
-    }
     pushHistory(node);
 }
 
@@ -2739,6 +2848,7 @@ function bindEditor(node) {
     });
     editor.addEventListener("paste", (event) => pasteIntoEditor(node, event), true);
     editor.addEventListener("input", () => {
+        if (editor.__h3SuppressInput) return;
         if (editor.__h3PromptHistory?.applying || node.__h3PromptHistory?.applying || activeMenu?.picker?.applying) return;
         repairCaretSinks(editor);
         syncFromEditor(node);
