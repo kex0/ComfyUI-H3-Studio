@@ -44,6 +44,9 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "Remove" in editor
     assert "replaceOneChip" in editor
     assert "replaceChipsByToken" in editor
+    assert "function promptEditors" in editor
+    assert "function persistEditor" in editor
+    assert 'host.querySelectorAll(".h3-studio-prompt-editor")' in editor
     assert "pushHistory" in editor
     assert "undoHistory" in editor
     assert "serializeRange" in editor
@@ -59,8 +62,12 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "createPromptEditorUi" in editor
     assert "h3-studio-prompt-wrap" in editor
     assert "h3_prompt_mentions" in editor
-    assert "getMinHeight: () => 50" in editor
-    assert "getHeight: () => \"100%\"" in editor
+    assert "function promptMinHeight" in editor
+    assert "DEFAULT_PROMPT_HEIGHT = 96" in editor
+    assert "PROMPT_HOST_CHROME = 40" in editor
+    assert "function fittingPromptNodeHeight" in editor
+    assert "getHeight: () => promptMinHeight(node)" in editor
+    assert 'getHeight: () => "100%"' not in editor
     assert "remainingPromptHeight" in editor
     assert "bindPromptWidgetSize" in editor
     assert "syncPromptWidget" in editor
@@ -70,7 +77,7 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "computedHeight" in editor
     assert "computeLayoutSize" in editor
     assert "pinPromptGrid" in editor
-    assert "minmax(50px, 1fr)" in editor
+    assert "minmax(${min}px, 1fr)" in editor
     assert "lg-node-widgets" in editor
     assert "hasLayoutSize = true" in editor
     assert "pinProgressWidget" in editor
@@ -78,6 +85,17 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "progressText" in editor
     assert "h3-studio-progress-pin" in editor
     assert "function isAdvancedAutoChain" in editor
+    assert "function isMusicVideo" in editor
+    assert "DEFAULT_PROMPT_HEIGHT = 96" in editor
+    assert "function applyDefaultPromptNodeSize" in editor
+    assert "function fitPromptNodeHeight" in editor
+    assert "function fitPromptNodeHeightSoon" in editor
+    assert "PER_CLIP_FIELD_HEIGHT = 100" in editor
+    assert "visibleClipEditors" in editor
+    assert "function orderPromptNodeWidgets" in editor
+    assert "if (!isMusicVideo(node)) return;" in editor
+    assert "function finishPromptNodeLayout" in editor
+    assert 'this.__h3DefaultSizeApplied = true' in editor
     assert "h3-studio-prompt-mode" in editor
     assert "One prompt per clip" in editor
     assert "Single prompt" in editor
@@ -87,6 +105,13 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "hideOriginalPromptWidget" in editor
     assert "listedWidgetValues" in editor
     assert "dropDomWidgetValue" in editor
+    assert "function defInputNames" in editor
+    assert "function serializedWidgetsInDefOrder" in editor
+    assert "function liftPerClipTimingValues" in editor
+    assert 'names.indexOf("duration")' in editor
+    assert 'names.indexOf("segments")' in editor
+    assert "next.splice(durI, 0, duration)" in editor
+    assert "next.splice(segI, 0, segments)" in editor
     assert 'widget.type = "hidden"' not in editor
     assert "togglePromptView" in editor
     assert "comfy-multiline-input" in editor
@@ -164,6 +189,22 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "lastFrameLabel" not in text
 
 
+def test_per_clip_widget_values_lift_duration_segments_after_prompt():
+    names = [
+        "width", "height", "prompt", "seamless_loop", "context_frames",
+        "save_images_to_disk", "duration", "segments", "prompt_1", "prompt_mode",
+    ]
+    visual = [1344, 768, "hello", 10.0, 5, False, "22", False, "", "single"]
+    prompt_i = names.index("prompt")
+    dur_i = names.index("duration")
+    seg_i = names.index("segments")
+    next_values = visual[:]
+    next_values[prompt_i + 1:prompt_i + 3] = []
+    next_values.insert(dur_i, 10.0)
+    next_values.insert(seg_i, 5)
+    assert next_values == [1344, 768, "hello", False, "22", False, 10.0, 5, "", "single"]
+
+
 def test_auto_chain_returns_images_and_audio_first():
     text = (ROOT / "auto_chain.py").read_text(encoding="utf-8")
     assert '_LOG = logging.getLogger("h3_continuous")' in text
@@ -190,7 +231,6 @@ def test_auto_chain_returns_images_and_audio_first():
     assert "first_frame=first_frame" not in text
     assert "reference_images=" in text
     assert "collect_music_video_reference_images" in text
-    assert "music_video_reference_image_specs" in text
     assert '"first_frame"' not in text
     assert "segment_last_frame_specs" not in text
     assert "last_frame_" not in text
@@ -199,14 +239,14 @@ def test_auto_chain_returns_images_and_audio_first():
     assert "stream_stitch_saved_clips" in text
     assert "filename_prefix" in text
     assert "class H3StudioAutoChain" in text
-    adv = text.split("class H3StudioAutoChainAdvanced", 1)[1]
-    assert 'required.pop("loop_prompt"' in adv
-    assert 'required.pop(f"prompt_{i}"' in adv
-    assert "prompt_mode" in adv
-    assert "document_has_loop" in adv
-    assert 'kwargs["prompt"] = ""' in adv
-    assert 'kwargs["seamless_loop"] = document_has_loop' in adv
-    assert 'optional["prompt_mode"]' in adv
+    assert "H3StudioAutoChainAdvanced" not in text
+    assert 'required.pop("loop_prompt"' in text
+    assert 'required.pop(f"prompt_{i}"' in text
+    assert "prompt_mode" in text
+    assert "document_has_loop" in text
+    assert 'kwargs["prompt"] = ""' in text
+    assert 'kwargs["seamless_loop"] = document_has_loop' in text
+    assert 'optional["prompt_mode"]' in text
     assert "def _clip_role" in text
     assert "combined_images" not in text
     assert "save_clip_videos" in text
@@ -293,15 +333,16 @@ def test_timeline_audio_slot_skips_persistent_ref_audio():
 def test_music_video_node_contract():
     text = (ROOT / "music_video.py").read_text(encoding="utf-8")
     assert "class H3StudioMusicVideo" in text
+    assert "H3StudioMusicVideoAdvanced" not in text
     assert 'RETURN_TYPES = ("IMAGE", "AUDIO", "STRING", "LATENT", "H3_CONTINUOUS_HANDOVER")' in text
-    assert '"song": ("AUDIO"' in text
-    assert text.find('"model_1": ("MODEL"') < text.find('"song": ("AUDIO"') < text.find('"clip": ("CLIP"')
-    adv = text.split("class H3StudioMusicVideoAdvanced", 1)[1]
-    assert '"pack": ("H3_STUDIO_PACK"' in adv
-    assert 'required.pop("model_1"' in adv
-    assert 'required.pop("duration"' in adv
-    assert "duration_and_segments_from_pack_or_prompt" in adv
-    assert "ordered.update(required)" in adv
+    assert '"song": ("AUDIO"' not in text
+    assert 'song = pack.get("song")' in text
+    assert "h3_studio: pack has no song" in text
+    assert text.find('"pack": ("H3_STUDIO_PACK"') < text.find('"clip": ("CLIP"')
+    assert text.find('"width": ("INT"') < text.find('"height": ("INT"') < text.find('"prompt": ("STRING"')
+    assert '"pack": ("H3_STUDIO_PACK"' in text
+    assert 'required.pop("duration"' in text
+    assert "duration_and_segments_from_pack_or_prompt" in text
     assert "parse_music_video_prompt" in text
     assert "song_audio_latent=" in text
     assert "from comfy_extras.nodes_minimax_h3 import _encode_ref_audio" in text
@@ -327,9 +368,10 @@ def test_music_video_node_contract():
     assert "stop_after_clip" in text
     assert "song_audio_lock=song_audio_lock" in text
     assert '"song_audio_lock"' in text
+    assert '"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05' in text.split('"song_audio_lock"', 1)[1]
+    assert "song_audio_lock=0.9" in text
     assert "reference_images=" in text
     assert "collect_music_video_reference_images" in text
-    assert "music_video_reference_image_specs" in text
     assert "first_frame=start_still" in text
     assert "_pack_first_frame" in text
     assert "first_frame=None" not in text
@@ -361,9 +403,13 @@ def test_music_video_node_contract():
     init = (ROOT / "__init__.py").read_text(encoding="utf-8")
     assert '"H3StudioMusicVideo": H3StudioMusicVideo' in init
     assert '"H3 Studio - Music Video"' in init
+    assert "H3StudioMusicVideoAdvanced" not in init
+    assert "Music Video Advanced" not in init
     assert '"H3StudioLoadSong": H3StudioLoadSong' in init
     assert '"H3 Studio - Load Song"' in init
     assert '"H3StudioAutoChain": H3StudioAutoChain' in init
+    assert "H3StudioAutoChainAdvanced" not in init
+    assert "Auto Chain Advanced" not in init
     assert '"H3StudioFaceRefineVideo": H3StudioFaceRefineVideo' in init
     assert "H3ContinuousMusicVideoV11" not in init
     assert "H3ContinuousAutoChainV11" not in init

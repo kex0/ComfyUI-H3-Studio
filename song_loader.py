@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 
@@ -9,15 +10,15 @@ import av
 import folder_paths
 import torch
 
-from .lyric_timing import parse_time_range
+from .lyric_align import resolve_timed_lyrics
+from .lyric_timing import parse_time_range, split_plain_lyric_lines
 
 AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
 
-def _input_audio_files():
+def input_audio_files():
     input_dir = folder_paths.get_input_directory()
     os.makedirs(input_dir, exist_ok=True)
-    files = []
     try:
         names = folder_paths.filter_files_content_types(os.listdir(input_dir), ["audio", "video"])
     except Exception:
@@ -26,8 +27,7 @@ def _input_audio_files():
             if os.path.isfile(os.path.join(input_dir, name))
             and os.path.splitext(name)[1].lower() in AUDIO_EXT
         ]
-    files = sorted(names)
-    return files or [""]
+    return sorted(names) or [""]
 
 
 def _f32_pcm(wav: torch.Tensor) -> torch.Tensor:
@@ -66,12 +66,12 @@ class H3StudioLoadSong:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "audio": (_input_audio_files(),),
+                "audio": (input_audio_files(),),
                 "lyrics": ("STRING", {
                     "multiline": True, "default": "", "dynamicPrompts": False,
                     "tooltip": (
-                        "Confirm-format LRC: one [start-end] line per phrase. "
-                        "Same text the skill waits on (song.confirm.lrc)."
+                        "Required. Untimed lines are timed on Time lyrics / first queue. "
+                        "Already-stamped confirm LRC ([start-end] text) is left as-is."
                     ),
                 }),
                 "loop": ("STRING", {
@@ -84,8 +84,8 @@ class H3StudioLoadSong:
             },
         }
 
-    RETURN_TYPES = ("AUDIO", "STRING", "FLOAT")
-    RETURN_NAMES = ("audio", "lyrics", "duration")
+    RETURN_TYPES = ("AUDIO", "STRING")
+    RETURN_NAMES = ("song", "lyrics")
     FUNCTION = "load_song"
     CATEGORY = "H3 Studio"
 
@@ -94,8 +94,10 @@ class H3StudioLoadSong:
             parse_time_range(loop)
         path = folder_paths.get_annotated_filepath(audio)
         loaded = load_song_audio(path)
-        duration = float(loaded["waveform"].shape[-1]) / float(loaded["sample_rate"])
-        return (loaded, str(lyrics or ""), duration)
+        timed = resolve_timed_lyrics(
+            path, lyrics, waveform=loaded["waveform"], sample_rate=loaded["sample_rate"],
+        )
+        return {"ui": {"lyrics": [timed]}, "result": (loaded, timed)}
 
     @classmethod
     def IS_CHANGED(cls, audio, lyrics="", loop=""):
@@ -110,9 +112,42 @@ class H3StudioLoadSong:
     def VALIDATE_INPUTS(cls, audio, lyrics="", loop=""):
         if not folder_paths.exists_annotated_filepath(audio):
             return f"Invalid audio file: {audio}"
+        if not split_plain_lyric_lines(lyrics):
+            return "h3_studio: lyrics are required"
         if loop and str(loop).strip():
             try:
                 parse_time_range(loop)
             except ValueError as exc:
                 return str(exc)
         return True
+
+
+def register_song_routes():
+    try:
+        from aiohttp import web
+        from server import PromptServer
+    except ImportError:
+        return
+    instance = getattr(PromptServer, "instance", None)
+    if instance is None or getattr(instance, "_h3_studio_song_routes", False):
+        return
+    instance._h3_studio_song_routes = True
+
+    @instance.routes.post("/h3_studio_song/align")
+    async def h3_studio_song_align(request):
+        body = await request.json()
+        filename = str(body.get("filename") or "").strip()
+        lyrics = str(body.get("lyrics") or "")
+        if not folder_paths.exists_annotated_filepath(filename):
+            return web.json_response({"error": f"Invalid audio file: {filename}"}, status=400)
+        path = folder_paths.get_annotated_filepath(filename)
+        try:
+            timed = await asyncio.get_running_loop().run_in_executor(
+                None, resolve_timed_lyrics, path, lyrics,
+            )
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"lyrics": timed})
+
+
+register_song_routes()

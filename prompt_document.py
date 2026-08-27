@@ -255,18 +255,11 @@ def _filter_subject_lines(block: str, clip_index: int, is_loop: bool,
     return text
 
 
-def _merge_subjects(shared: str, local: str) -> str:
-    shared = str(shared or "").strip()
-    local = str(local or "").strip()
-    if not shared:
+def _clip_subjects(parsed: dict, clip: dict) -> str:
+    local = str(clip.get("local_subjects") or "").strip()
+    if local:
         return local
-    if not local:
-        return shared
-    shared_set = {line.strip() for line in shared.splitlines() if line.strip()}
-    extra = [line for line in local.splitlines() if line.strip() and line.strip() not in shared_set]
-    if not extra:
-        return shared
-    return shared + "\n" + "\n".join(extra)
+    return str(parsed.get("shared_subjects") or "").strip()
 
 
 def _audio_window(clip: dict, parsed: dict):
@@ -291,7 +284,7 @@ def expand_clip(parsed: dict, clip_index: int, song_audio=False, is_loop=False) 
     if clip is None:
         raise ValueError(f"h3_studio: prompt has no clip {clip_index}")
     subjects = _filter_subject_lines(
-        _merge_subjects(parsed.get("shared_subjects") or "", clip.get("local_subjects") or ""),
+        _clip_subjects(parsed, clip),
         clip_index=clip["index"],
         is_loop=bool(clip.get("is_loop")),
         song_audio=song_audio,
@@ -402,17 +395,12 @@ def duration_and_segments_from_pack_or_prompt(pack, prompt, *, need_segments=Fal
 def assemble_music_video_document(max_duration, clips) -> str:
     """clips: dicts with index, time, duration_seconds, slice, audio, lyrics, prompt."""
     items = list(clips or [])
-    first_body = str(items[0].get("prompt") or "") if items else ""
-    shared = split_sections(first_body).get("subject_definitions") or ""
     duration = float(max_duration)
     lines = [
         "H3 Studio prompt",
         "mode: music_video",
         f"duration: {duration:.3f}",
         f"segments: {len(items)}",
-        "",
-        "subject_definitions:",
-        shared,
         "",
     ]
     for i, clip in enumerate(items, 1):
@@ -432,7 +420,7 @@ def assemble_music_video_document(max_duration, clips) -> str:
         lines.append("lyrics:")
         lines.append(lyrics or "(instrumental)")
         sections = split_sections(str(clip.get("prompt") or ""))
-        for head in SECTION_HEADS[1:]:
+        for head in SECTION_HEADS:
             lines.append(f"{head}:")
             lines.append(sections.get(head) or "")
             lines.append("")
@@ -442,17 +430,12 @@ def assemble_music_video_document(max_duration, clips) -> str:
 def assemble_auto_chain_document(duration, segments, loop, bodies) -> str:
     """bodies: iterable of (role, six-section body, is_loop)."""
     items = list(bodies)
-    first = next((item for item in items if not item[2]), None)
-    shared = split_sections(first[1] if first else "").get("subject_definitions") or ""
     lines = [
         "H3 Studio prompt",
         "mode: auto_chain",
         f"duration: {float(duration):.2f}",
         f"segments: {int(segments)}",
         f"loop: {'true' if loop else 'false'}",
-        "",
-        "subject_definitions:",
-        shared,
         "",
     ]
     story_i = 0
@@ -464,7 +447,7 @@ def assemble_auto_chain_document(duration, segments, loop, bodies) -> str:
             story_i += 1
             label = str(role or "Continue").replace(" (final)", "")
             lines.append(f"## Clip {story_i} — {label}")
-        for head in SECTION_HEADS[1:]:
+        for head in SECTION_HEADS:
             lines.append(f"{head}:")
             lines.append(sections.get(head) or "")
             lines.append("")

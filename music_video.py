@@ -18,7 +18,6 @@ from .auto_chain import (
 from .chain_inputs import (
     clips_to_reuse,
     collect_music_video_reference_images,
-    music_video_reference_image_specs,
 )
 from .latent_math import FPS, temporal_shape
 from .music_video_prompt import parse_music_video_prompt, validate_music_video_prompt
@@ -204,14 +203,13 @@ class H3StudioMusicVideo:
     def INPUT_TYPES(cls):
         from .png_sequence import save_images_to_disk_spec
         required = {
-                "model_1": ("MODEL", {
+                "pack": ("H3_STUDIO_PACK", {
                     "tooltip": (
-                        "Required full patched H3 MODEL: Checkpoint → LoRA → Sigma Shift → "
-                        "Sage / SolAttn / Spectrum. Used for every clip."
+                        "Pack from H3 Studio Builder. Clip count and max duration come from the prompt, "
+                        "or duration from this pack. The pack's song is sliced per clip for lipsync "
+                        "(<Audio 1>); Builder audios are <Audio 2> and <Audio 3>. Optional <Model N> / "
+                        "<Picture N> / <Video N> select a subset per CLIP body."
                     ),
-                }),
-                "song": ("AUDIO", {
-                    "tooltip": "Source song. Pipe this in directly (Load Song or any AUDIO). Sliced per H3-grid clip for lipsync; the same master is muxed onto the stitched picture. H3's reconstructed audio is discarded. Do not put the song on the Builder.",
                 }),
                 "clip": ("CLIP", {
                     "tooltip": "Qwen3-VL H3 text encoder. Encodes each clip's Ref2VA prompt and optional <Picture N> stills.",
@@ -231,10 +229,6 @@ class H3StudioMusicVideo:
                 "noise": ("NOISE", {
                     "tooltip": "Noise source from RandomNoise. Clip 1 uses this seed; clip i uses seed + (i-1).",
                 }),
-                "prompt": ("STRING", {
-                    "multiline": True, "dynamicPrompts": False, "default": "",
-                    "tooltip": "One H3 Studio prompt for every clip (shared subject_definitions + ## Clip N). Legacy h3_music_video / CLIP blocks still parse. Clip count comes from this text, not a segments widget.",
-                }),
                 "width": ("INT", {
                     "default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                     "tooltip": "Generation width in pixels. Must stay constant for the whole chain.",
@@ -242,6 +236,10 @@ class H3StudioMusicVideo:
                 "height": ("INT", {
                     "default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32,
                     "tooltip": "Generation height in pixels. Must stay constant for the whole chain.",
+                }),
+                "prompt": ("STRING", {
+                    "multiline": True, "dynamicPrompts": False, "default": "",
+                    "tooltip": "One H3 Studio prompt for every clip (## Clip N with that clip's subject_definitions). A top-level subject_definitions block is legacy fallback. Legacy h3_music_video / CLIP blocks still parse. Clip count comes from this text, not a segments widget.",
                 }),
                 "duration": ("FLOAT", {
                     "default": 10.0, "min": 5.0, "max": 15.0, "step": 0.1,
@@ -302,9 +300,10 @@ class H3StudioMusicVideo:
                 }),
                 "save_images_to_disk": save_images_to_disk_spec(),
             }
+        required.pop("duration", None)
         optional = {
                 "song_audio_lock": ("FLOAT", {
-                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                    "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": (
                         "Pin this clip's generated audio latent to the song slice. "
                         "0 = H3 generates audio (current). 1 = copy the song latent and do not denoise it; "
@@ -312,7 +311,6 @@ class H3StudioMusicVideo:
                         "The muxed master soundtrack stays the original song either way."
                     ),
                 }),
-                **music_video_reference_image_specs(),
             }
         return {
             "required": required,
@@ -326,21 +324,33 @@ class H3StudioMusicVideo:
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
     DESCRIPTION = (
-        "v1.2 music video: parse a structured lyrics prompt, slice the source song onto H3's "
-        "frame grid, generate until kept picture covers the song (head/tail trims included), "
-        "then return IMAGE. save_images_to_disk (off by default) writes a lossless PNG sequence in ComfyUI temp "
-        "and loads that sequence; off keeps frames in RAM and errors if they will not fit. "
-        "AUDIO is the original song. "
-        "Clip 1 is Ref2VA (optional <Picture N> stills + song slice), not FL2VA. "
-        "Optional per-clip MP4s (original song slice and H3 reconstructed audio) appear as soon as each clip decodes. "
-        "Each join discards at least 1 s of the previous clip and Continue takes context from before that cut. "
-        "Final AUDIO is the master, never H3's reconstruction."
+        "Music Video with a Builder pack: per-clip model and extra Ref2VA refs from prompt tags. "
+        "Clip count and max duration come from the prompt, or duration from the Builder pack. "
+        "The generate-length song slice stays <Audio 1>. Song comes from the Builder pack."
     )
 
-    def generate(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
+    def generate(self, pack, **kwargs):
+        from .pack import require_pack
+        from .prompt_document import duration_and_segments_from_pack_or_prompt
+        pack = require_pack(pack)
+        duration, _segments = duration_and_segments_from_pack_or_prompt(
+            pack, kwargs.get("prompt") or "", need_segments=False,
+        )
+        kwargs["pack"] = pack
+        kwargs["model_1"] = pack["models"][0]["model"]
+        kwargs["duration"] = duration
+        song = pack.get("song")
+        if not isinstance(song, dict) or song.get("waveform") is None:
+            raise ValueError(
+                "h3_studio: pack has no song; set Music Video mode on Builder and wire Load Song"
+            )
+        kwargs["song"] = song
+        return self._generate_chain(**kwargs)
+
+    def _generate_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
                  width, height, duration, context_frames="22", handover_preset="Balanced",
                  save_segment_latents=True, save_clip_videos=True,
-                 freeze_overlap=True, overlap_soft_steps=2, song_audio_lock=0.0,
+                 freeze_overlap=True, overlap_soft_steps=2, song_audio_lock=0.9,
                  latent_prefix="h3_music_video/clip",
                  resume_from_clip=1, stop_after_clip=0,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
@@ -683,53 +693,4 @@ class H3StudioMusicVideo:
             info += " | " + " ; ".join(notes[-clip_total * 4:])
         _LOG.info("h3_continuous: %s", info)
         return pack_image_output(images, frames_dir, audio, info, last_latent, last_handover)
-
-
-class H3StudioMusicVideoAdvanced(H3StudioMusicVideo):
-    @classmethod
-    def INPUT_TYPES(cls):
-        base = H3StudioMusicVideo.INPUT_TYPES()
-        required = dict(base["required"])
-        required.pop("model_1", None)
-        required.pop("duration", None)
-        required.pop("segments", None)
-        ordered = {
-            "pack": ("H3_STUDIO_PACK", {
-                "tooltip": (
-                    "Pack from H3 Studio Builder. Clip count and max duration come from the prompt, "
-                    "or duration from this pack. <Audio 1> is still this clip's song slice; "
-                    "Builder audios are <Audio 2> and <Audio 3>. Optional <Model N> / <Picture N> / "
-                    "<Video N> select a subset per CLIP body."
-                ),
-            }),
-        }
-        ordered.update(required)
-        optional = {
-            key: spec for key, spec in dict(base.get("optional") or {}).items()
-            if not key.startswith("reference_image")
-        }
-        return {
-            "required": ordered,
-            "optional": optional,
-            "hidden": dict(base.get("hidden") or {}),
-        }
-
-    DESCRIPTION = (
-        "Music Video with a Builder pack: per-clip model and extra Ref2VA refs from prompt tags. "
-        "Clip count and max duration come from the prompt, or duration from the Builder pack. "
-        "The generate-length song slice stays <Audio 1>. Wire Builder → pack, not the original "
-        "Music Video model / picture sockets."
-    )
-
-    def generate(self, pack, **kwargs):
-        from .pack import require_pack
-        from .prompt_document import duration_and_segments_from_pack_or_prompt
-        pack = require_pack(pack)
-        duration, _segments = duration_and_segments_from_pack_or_prompt(
-            pack, kwargs.get("prompt") or "", need_segments=False,
-        )
-        kwargs["pack"] = pack
-        kwargs["model_1"] = pack["models"][0]["model"]
-        kwargs["duration"] = duration
-        return super().generate(**kwargs)
 

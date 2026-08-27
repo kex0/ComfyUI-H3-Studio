@@ -14,8 +14,7 @@ from comfy_extras.nodes_custom_sampler import Guider_Basic, Noise_RandomNoise
 
 from .chain_inputs import (
     MAX_SEGMENTS, clips_to_reuse, collect_music_video_reference_images,
-    collect_segment_models, music_video_reference_image_specs,
-    segment_model_specs, segment_prompt_specs,
+    collect_segment_models, segment_prompt_specs,
 )
 from .latent_math import CONTEXT_TO_STEPS, loop_wrap_start_frames, pixel_frames
 from .spectrum_join import attach_spectrum_join_prefix
@@ -205,11 +204,13 @@ class H3StudioAutoChain:
     @classmethod
     def INPUT_TYPES(cls):
         required = {
-            "model_1": ("MODEL", {
+            "pack": ("H3_STUDIO_PACK", {
                 "tooltip": (
-                    "Required full patched H3 MODEL for clip 1: Checkpoint → LoRA → Sigma Shift → "
-                    "Sage / SolAttn / Spectrum. Not a LoRA file. Also used by any later clip whose "
-                    "model_N socket is empty."
+                    "Pack from H3 Studio Builder: enabled models plus image/video/audio refs. "
+                    "In single-prompt mode, duration, clip count, and loop come from the prompt, "
+                    "or duration/clip count from this pack. Per-clip <Model N> / <Picture N> / "
+                    "<Video N> / <Audio N> select a subset; otherwise Model 1 and the first refs "
+                    "that fit the H3 caps are used."
                 ),
             }),
             "clip": ("CLIP", {
@@ -249,10 +250,11 @@ class H3StudioAutoChain:
             "prompt": ("STRING", {
                 "multiline": True, "default": "", "dynamicPrompts": False,
                 "tooltip": (
-                    "One H3 Studio prompt for every clip: shared subject_definitions at the top, "
-                    "then ## Clip 1 — Start / Continue / Finish. Optional ## Loop when seamless_loop "
-                    "is on. Edit the shared subjects once to update every clip. @Picture N chips "
-                    "replace a reference here or in all clips."
+                    "One H3 Studio prompt for every clip: ## Clip 1 — Start / Continue / Finish, "
+                    "each with its own subject_definitions (dump labels that clip loads). Optional "
+                    "## Loop when seamless_loop is on. A top-level subject_definitions block is "
+                    "legacy fallback for clips that omit one. @Picture N chips replace a reference "
+                    "here or in all clips."
                 ),
             }),
         }
@@ -313,15 +315,27 @@ class H3StudioAutoChain:
         })
         from .png_sequence import save_images_to_disk_spec
         required["save_images_to_disk"] = save_images_to_disk_spec()
-        optional = {
-            **music_video_reference_image_specs(),
-        }
-        optional.update(segment_model_specs())
-        optional["model_loop"] = ("MODEL", {
+        duration_spec = required.pop("duration", None)
+        segments_spec = required.pop("segments", None)
+        loop_prompt_spec = required.pop("loop_prompt", None)
+        prompt_specs = {}
+        for i in range(1, MAX_SEGMENTS + 1):
+            spec = required.pop(f"prompt_{i}", None)
+            if spec:
+                prompt_specs[f"prompt_{i}"] = spec
+        optional = {}
+        if duration_spec:
+            optional["duration"] = duration_spec
+        if segments_spec:
+            optional["segments"] = segments_spec
+        optional.update(prompt_specs)
+        if loop_prompt_spec:
+            optional["loop_prompt"] = loop_prompt_spec
+        optional["prompt_mode"] = (["single", "per_clip"], {
+            "default": "single",
             "tooltip": (
-                "Optional full patched H3 MODEL for the extra Loop clip. Same stack as model_1 "
-                "(Checkpoint → LoRA → Sigma Shift → Sage / SolAttn / Spectrum). If unconnected, "
-                "the Loop clip uses model_1 so the landing matches clip 1's identity."
+                "single: one H3 Studio prompt with ## Clip sections. "
+                "per_clip: duration, segments, and seamless_loop widgets plus one prompt per clip."
             ),
         })
         return {
@@ -336,18 +350,39 @@ class H3StudioAutoChain:
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
     DESCRIPTION = (
-        "v1.2 one-node chain: Ref2VA Start (optional <Picture N> stills, same as Music Video), "
-        "then Continue for each extra segment, Auto Handover after every "
-        "clip, optional per-clip latent save, optional per-clip MP4 previews, then a memory-bounded stitch "
-        "to IMAGE. save_images_to_disk (off by default) writes a lossless PNG sequence in ComfyUI temp "
-        "and loads that sequence; off keeps frames in RAM and errors if they will not fit. "
-        "Each clip unloads CLIP / H3 / VAE between encode, sample and decode, matching separately queued segments. "
-        "resume_from_clip loads earlier saved latents and continues from that clip. "
-        "Optional model_2..model_N take the same full patched MODEL stack as model_1; empty sockets reuse model_1. "
-        "seamless_loop adds one extra Continue clip from the last ending plus clip 1's opening after the I2VA hold, trims those copied windows like other joins, then closes the wrap."
+        "Auto Chain with a Builder pack: per-clip model and Ref2VA image/video/audio refs from "
+        "prompt tags. Single-prompt mode reads duration, clip count, and loop from the prompt "
+        "(or duration/clip count from the Builder pack). One-prompt-per-clip mode shows those "
+        "widgets again. Wire Builder → pack."
     )
 
-    def generate(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
+    def generate(self, pack, prompt_mode="single", **kwargs):
+        from .pack import require_pack
+        from .prompt_document import (
+            document_has_loop, duration_and_segments_from_pack_or_prompt,
+        )
+        pack = require_pack(pack)
+        mode = str(prompt_mode or "single").strip().lower().replace(" ", "_")
+        if mode == "per_clip":
+            if kwargs.get("duration") is None:
+                raise ValueError("h3_studio: duration is missing")
+            if kwargs.get("segments") is None:
+                raise ValueError("h3_studio: segments is missing")
+            kwargs["duration"] = float(kwargs["duration"])
+            kwargs["segments"] = int(kwargs["segments"])
+            kwargs["prompt"] = ""
+        else:
+            duration, segments = duration_and_segments_from_pack_or_prompt(
+                pack, kwargs.get("prompt") or "", need_segments=True,
+            )
+            kwargs["duration"] = duration
+            kwargs["segments"] = segments
+            kwargs["seamless_loop"] = document_has_loop(kwargs.get("prompt") or "")
+        kwargs["pack"] = pack
+        kwargs["model_1"] = pack["models"][0]["model"]
+        return self._generate_chain(**kwargs)
+
+    def _generate_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
                  width, height, duration, segments, context_frames="22",
                  handover_preset="Balanced", save_segment_latents=True, save_clip_videos=True,
                  freeze_overlap=True, overlap_soft_steps=2,
@@ -711,88 +746,4 @@ class H3StudioAutoChain:
             info += " | " + " ; ".join(notes[-keep_notes:])
         _LOG.info("h3_continuous: %s", info)
         return pack_image_output(images, frames_dir, audio, info, last_latent, last_handover)
-
-
-class H3StudioAutoChainAdvanced(H3StudioAutoChain):
-    @classmethod
-    def INPUT_TYPES(cls):
-        base = H3StudioAutoChain.INPUT_TYPES()
-        required = dict(base["required"])
-        required.pop("model_1", None)
-        duration_spec = required.pop("duration", None)
-        segments_spec = required.pop("segments", None)
-        loop_prompt_spec = required.pop("loop_prompt", None)
-        prompt_specs = {}
-        for i in range(1, MAX_SEGMENTS + 1):
-            spec = required.pop(f"prompt_{i}", None)
-            if spec:
-                prompt_specs[f"prompt_{i}"] = spec
-        ordered = {
-            "pack": ("H3_STUDIO_PACK", {
-                "tooltip": (
-                    "Pack from H3 Studio Builder: enabled models plus image/video/audio refs. "
-                    "In single-prompt mode, duration, clip count, and loop come from the prompt, "
-                    "or duration/clip count from this pack. Per-clip <Model N> / <Picture N> / "
-                    "<Video N> / <Audio N> select a subset; otherwise Model 1 and the first refs "
-                    "that fit the H3 caps are used."
-                ),
-            }),
-        }
-        ordered.update(required)
-        optional = {
-            key: spec for key, spec in dict(base.get("optional") or {}).items()
-            if not key.startswith("reference_image") and not key.startswith("model_")
-        }
-        if duration_spec:
-            optional["duration"] = duration_spec
-        if segments_spec:
-            optional["segments"] = segments_spec
-        optional.update(prompt_specs)
-        if loop_prompt_spec:
-            optional["loop_prompt"] = loop_prompt_spec
-        optional["prompt_mode"] = (["single", "per_clip"], {
-            "default": "single",
-            "tooltip": (
-                "single: one H3 Studio prompt with ## Clip sections. "
-                "per_clip: duration, segments, and seamless_loop widgets plus one prompt per clip."
-            ),
-        })
-        return {
-            "required": ordered,
-            "optional": optional,
-            "hidden": dict(base.get("hidden") or {}),
-        }
-
-    DESCRIPTION = (
-        "Auto Chain with a Builder pack: per-clip model and Ref2VA image/video/audio refs from "
-        "prompt tags. Single-prompt mode reads duration, clip count, and loop from the prompt "
-        "(or duration/clip count from the Builder pack). One-prompt-per-clip mode shows those "
-        "widgets again. Wire Builder → pack; do not use the original Auto Chain sockets."
-    )
-
-    def generate(self, pack, prompt_mode="single", **kwargs):
-        from .pack import require_pack
-        from .prompt_document import (
-            document_has_loop, duration_and_segments_from_pack_or_prompt,
-        )
-        pack = require_pack(pack)
-        mode = str(prompt_mode or "single").strip().lower().replace(" ", "_")
-        if mode == "per_clip":
-            if kwargs.get("duration") is None:
-                raise ValueError("h3_studio: duration is missing")
-            if kwargs.get("segments") is None:
-                raise ValueError("h3_studio: segments is missing")
-            kwargs["duration"] = float(kwargs["duration"])
-            kwargs["segments"] = int(kwargs["segments"])
-            kwargs["prompt"] = ""
-        else:
-            duration, segments = duration_and_segments_from_pack_or_prompt(
-                pack, kwargs.get("prompt") or "", need_segments=True,
-            )
-            kwargs["duration"] = duration
-            kwargs["segments"] = segments
-            kwargs["seamless_loop"] = document_has_loop(kwargs.get("prompt") or "")
-        kwargs["pack"] = pack
-        kwargs["model_1"] = pack["models"][0]["model"]
-        return super().generate(**kwargs)
 

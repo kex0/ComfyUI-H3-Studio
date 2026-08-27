@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { captureNodeSize, restoreNodeSizeSoon } from "./nodeSize.js";
 
 const TARGET_CLASS = "H3StudioAutoChain";
-const TARGET_CLASSES = new Set(["H3StudioAutoChain", "H3StudioAutoChainAdvanced"]);
+const TARGET_CLASSES = new Set(["H3StudioAutoChain"]);
 const MAX_SEGMENTS = 12;
 
 function targetNames(node) {
@@ -71,7 +71,7 @@ function rememberStableSize(node) {
 
 function preserveNodeSize(node) {
     rememberStableSize(node);
-    captureNodeSize(node, node.__h3StableSize || node.size);
+    captureNodeSize(node, snapshotSize(node) || node.__h3StableSize);
 }
 
 function refreshNodeLayout(node) {

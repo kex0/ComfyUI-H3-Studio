@@ -26,14 +26,15 @@ const MIN_LIST_PX = 64;
 const MIN_PLAN_PX = 88;
 const MODE_AUTO_CHAIN = "auto_chain";
 const MODE_MUSIC_VIDEO = "music_video";
-const MUSIC_VIDEO_SONG_TIP = "Pipe the song directly to the Music Video node's song input. Builder audio refs are unused.";
+const MUSIC_VIDEO_SONG_TIP = "Music Video uses the Builder song (drop a file or wire Load Song). Builder audio refs are unused.";
 const COPY_PACK_LABEL = "Copy pack summary";
-const COPY_PACK_TIP = "Copies duration, segments, enabled labels, and the plan field for the H3 prompt skills.";
+const COPY_PACK_TIP = "Copies duration, segments, loop, enabled labels, and the plan field.";
 const MIN_REGION_SEC = 2;
 const MIN_DURATION_SEC = 5;
 const MAX_DURATION_SEC = 15;
 const MAX_SEGMENTS = 12;
 const MIN_VIEW_SEC = 1;
+const SERIAL_WIDGETS = ["state_json", "mode", "max_clip_duration", "segments", "loop", "song_file", "lyrics"];
 const REGION_COLORS = [
     ["rgba(120,185,255,.28)", "#7ec8ff"],
     ["rgba(120,220,160,.28)", "#7ee0a8"],
@@ -72,6 +73,20 @@ function findWidget(node, name) {
     return node?.widgets?.find((item) => item?.name === name);
 }
 
+function findInput(node, name) {
+    return node.inputs?.find((slot) => slot?.name === name);
+}
+
+function songSocketLinked(node) {
+    return slotLinked(findInput(node, "song"));
+}
+
+function isAudioFile(file) {
+    const name = String(file?.name || "").toLowerCase();
+    const type = String(file?.type || "");
+    return type.startsWith("audio/") || /\.(mp3|wav|flac|ogg|m4a|aac|wma)$/.test(name);
+}
+
 function slotLinked(input) {
     if (!input) return false;
     if (input.link != null && input.link !== -1) return true;
@@ -87,6 +102,7 @@ function ensureMinSize(node) {
 }
 
 function refreshNodeLayout(node) {
+    node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
     node.graph?.setDirtyCanvas?.(true, true);
 }
@@ -231,7 +247,7 @@ function clampAllRegions(node) {
 }
 
 function setBuilderDuration(node, value, clamp = true) {
-    const widget = findWidget(node, "duration");
+    const widget = findWidget(node, "max_clip_duration");
     const next = Math.max(MIN_DURATION_SEC, Math.min(MAX_DURATION_SEC, Number(value) || 10));
     if (widget) {
         widget.value = next;
@@ -253,7 +269,7 @@ function setBuilderSegments(node, value, clamp = true) {
 }
 
 function builderDuration(node) {
-    const raw = Number(findWidget(node, "duration")?.value);
+    const raw = Number(findWidget(node, "max_clip_duration")?.value);
     return Number.isFinite(raw) ? raw : 10;
 }
 
@@ -262,13 +278,35 @@ function builderSegments(node) {
     return Number.isFinite(raw) ? Math.round(raw) : 2;
 }
 
+function builderLoop(node) {
+    return Boolean(findWidget(node, "loop")?.value);
+}
+
+function setWidgetOption(widget, key, value) {
+    if (!widget) return;
+    widget.options ||= {};
+    if (value === undefined) delete widget.options[key];
+    else widget.options[key] = value;
+    if (widget._state?.options) {
+        if (value === undefined) delete widget._state.options[key];
+        else widget._state.options[key] = value;
+    }
+}
+
 function setWidgetVisible(widget, visible) {
     if (!widget) return;
     widget.hidden = !visible;
+    setWidgetOption(widget, "hidden", visible ? undefined : true);
     if (visible) {
         delete widget.computeSize;
+        widget.computedHeight = undefined;
+        if (widget.inputEl) widget.inputEl.style.display = "";
+        if (widget.element) widget.element.style.display = "";
     } else {
         widget.computeSize = () => [0, -4];
+        widget.computedHeight = 0;
+        if (widget.inputEl) widget.inputEl.style.display = "none";
+        if (widget.element) widget.element.style.display = "none";
     }
 }
 
@@ -278,16 +316,320 @@ function setInputVisible(node, name, visible) {
     input.hidden = !visible;
 }
 
+function lyricsSocketLinked(node) {
+    return slotLinked(findInput(node, "lyrics"));
+}
+
+function keepDomVisibleWhenWired(widget) {
+    if (!widget || widget.__h3KeepDomVisible) return;
+    widget.__h3KeepDomVisible = true;
+    widget.isVisible = function () {
+        if (this.hidden) return false;
+        return this.node?.isWidgetVisible?.(this) !== false;
+    };
+}
+
+function hideSongFileWidget(node) {
+    const widget = findWidget(node, "song_file");
+    if (!widget) return;
+    widget.serialize = true;
+    setWidgetVisible(widget, false);
+}
+
+function ensureLyricsSocket(node) {
+    const widget = findWidget(node, "lyrics");
+    if (!widget) return;
+    setWidgetOption(widget, "hideOnConnect", false);
+    keepDomVisibleWhenWired(widget);
+}
+
+function songDropLabel(node) {
+    if (songSocketLinked(node)) return "Using wired song";
+    const name = String(findWidget(node, "song_file")?.value || "").trim();
+    return name || "Drop song or click to upload";
+}
+
+function isVueNodesMode() {
+    return Boolean(globalThis.LiteGraph?.vueNodesMode);
+}
+
+function applyNativeWidgetTheme(element) {
+    if (!element?.style) return;
+    const LiteGraph = globalThis.LiteGraph || {};
+    const modern = isVueNodesMode();
+    const widgetBg = LiteGraph.WIDGET_BGCOLOR || "#222";
+    const widgetText = LiteGraph.WIDGET_TEXT_COLOR || "#ddd";
+    element.classList?.toggle("h3-native-vue-nodes", modern);
+    if (modern) {
+        element.style.setProperty("--h3-native-widget-bg", "var(--component-node-widget-background, var(--secondary-background, #222))");
+        element.style.setProperty("--h3-native-widget-text", "var(--component-node-foreground, var(--base-foreground, #ddd))");
+        element.style.setProperty("--h3-native-widget-outline", "var(--component-node-widget-background-highlighted, var(--border-default, rgba(255, 255, 255, 0.18)))");
+        element.style.setProperty("--h3-native-widget-focus", "var(--component-node-widget-background-highlighted, var(--border-default, rgba(255, 255, 255, 0.28)))");
+        element.style.setProperty("--h3-native-widget-radius", "var(--radius-lg, 8px)");
+        element.style.setProperty("--h3-native-widget-text-size", "var(--text-xs, 12px)");
+        element.style.setProperty("--h3-native-widget-line-height", "var(--text-xs--line-height, 1.333)");
+        return;
+    }
+    element.style.setProperty("--h3-native-widget-bg", `var(--comfy-input-bg, ${widgetBg})`);
+    element.style.setProperty("--h3-native-widget-text", `var(--input-text, ${widgetText})`);
+    element.style.setProperty("--h3-native-widget-outline", "var(--border-color, rgba(255, 255, 255, 0.18))");
+    element.style.setProperty("--h3-native-widget-focus", "var(--border-color, rgba(255, 255, 255, 0.28))");
+    element.style.setProperty("--h3-native-widget-radius", "0px");
+    element.style.setProperty("--h3-native-widget-text-size", "12px");
+    element.style.setProperty("--h3-native-widget-line-height", "1.3");
+}
+
+function ensureSongDropStyle() {
+    if (document.getElementById("h3-builder-song-style")) return;
+    const style = document.createElement("style");
+    style.id = "h3-builder-song-style";
+    style.textContent = `
+.h3-builder-song-drop {
+  display: flex; align-items: stretch; width: 100%; height: 100%; min-height: 24px;
+  box-sizing: border-box; background: transparent;
+}
+.h3-builder-song-drop-face {
+  flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr);
+  align-items: center; gap: 8px; min-height: 24px; padding: 0; border: 0; background: transparent;
+  color: var(--h3-native-widget-text, var(--component-node-foreground, var(--input-text, #ddd)));
+  font: 500 var(--h3-native-widget-text-size, 12px)/var(--h3-native-widget-line-height, 1.3) Inter, system-ui, sans-serif;
+  cursor: pointer; user-select: none;
+}
+.h3-builder-song-name { flex: 0 0 auto; opacity: .78; padding-left: 2px; }
+.h3-builder-song-value {
+  min-width: 0; height: 24px; display: flex; align-items: center; justify-content: flex-end;
+  padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  background: var(--h3-native-widget-bg, var(--component-node-widget-background, var(--comfy-input-bg, #353535)));
+  border-radius: var(--h3-native-widget-radius, var(--radius-lg, 8px)); color: inherit;
+}
+.h3-builder-song-drop-face:hover .h3-builder-song-value {
+  background: var(--h3-native-widget-outline, var(--component-node-widget-background-highlighted, rgba(255,255,255,.08)));
+}
+.h3-builder-song-drop-face.is-drag .h3-builder-song-value {
+  box-shadow: 0 0 0 1px var(--h3-native-widget-focus, rgba(120,185,255,.7));
+}
+.h3-builder-song-drop-face.is-disabled { opacity: .55; cursor: default; pointer-events: none; }
+`;
+    document.head.appendChild(style);
+}
+
+function dropHitsElement(event, el) {
+    if (!el || !event) return false;
+    const x = Number(event.clientX);
+    const y = Number(event.clientY);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+    const rect = el.getBoundingClientRect?.();
+    if (!rect) return false;
+    return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+}
+
+function dropTargetZone(node, event) {
+    const target = event?.target;
+    if (target && node.__h3SongDrop?.root?.contains?.(target)) return "song";
+    if (target && node.__h3BuilderUi?.list?.contains?.(target)) return "list";
+    if (dropHitsElement(event, node.__h3SongDrop?.root)) return "song";
+    if (dropHitsElement(event, node.__h3BuilderUi?.list)) return "list";
+    return "";
+}
+
+function takeFileDrop(node) {
+    const now = globalThis.performance?.now?.() ?? Date.now();
+    if (node.__h3FileDropAt && now - node.__h3FileDropAt < 200) return false;
+    node.__h3FileDropAt = now;
+    return true;
+}
+
+function orderSongBeforeLyrics(node) {
+    const widgets = node.widgets;
+    if (!Array.isArray(widgets)) return;
+    const song = node.__h3SongDrop?.widget || findWidget(node, "song");
+    const lyrics = findWidget(node, "lyrics");
+    if (!song || !lyrics || song.serialize !== false) return;
+    const from = widgets.indexOf(song);
+    const to = widgets.indexOf(lyrics);
+    if (from < 0 || to < 0 || from === to - 1) return;
+    widgets.splice(from, 1);
+    widgets.splice(widgets.indexOf(lyrics), 0, song);
+}
+
+function syncSongDropWidget(node) {
+    const drop = node.__h3SongDrop;
+    if (!drop?.face || !drop?.label) return;
+    const linked = songSocketLinked(node);
+    drop.face.classList.toggle("is-disabled", linked);
+    drop.label.textContent = songDropLabel(node);
+    const widget = drop.widget;
+    if (widget) widget.disabled = linked;
+}
+
+function ensureSongDropWidget(node) {
+    if (node.__h3SongDrop?.widget && node.widgets?.includes(node.__h3SongDrop.widget)) {
+        const existing = node.__h3SongDrop.widget;
+        setWidgetOption(existing, "hideOnConnect", false);
+        keepDomVisibleWhenWired(existing);
+        syncSongDropWidget(node);
+        return existing;
+    }
+    ensureSongDropStyle();
+    const root = document.createElement("div");
+    root.className = "h3-builder-song-drop";
+    applyNativeWidgetTheme(root);
+    root.innerHTML = `
+      <input type="file" accept="audio/*,.mp3,.wav,.flac,.ogg,.m4a,.aac,.wma" hidden>
+      <div class="h3-builder-song-drop-face" data-act="song-face">
+        <span class="h3-builder-song-name">song</span>
+        <span class="h3-builder-song-value" data-act="song-label"></span>
+      </div>
+    `;
+    const fileInput = root.querySelector("input[type=file]");
+    const face = root.querySelector("[data-act=song-face]");
+    const label = root.querySelector("[data-act=song-label]");
+    face.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (songSocketLinked(node)) return;
+        fileInput.click();
+    });
+    fileInput.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = "";
+        if (!file) return;
+        try {
+            await setSongFromFile(node, file);
+        } catch (exc) {
+            window.alert(exc?.message || String(exc));
+        }
+    });
+    face.addEventListener("dragenter", (event) => {
+        if (!isFileDrag(event) || songSocketLinked(node)) return;
+        event.preventDefault();
+        face.classList.add("is-drag");
+    });
+    face.addEventListener("dragover", (event) => {
+        if (!isFileDrag(event) || songSocketLinked(node)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+        face.classList.add("is-drag");
+    });
+    face.addEventListener("dragleave", () => face.classList.remove("is-drag"));
+    face.addEventListener("drop", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        face.classList.remove("is-drag");
+        if (songSocketLinked(node) || !takeFileDrop(node)) return;
+        const file = [...(event.dataTransfer?.files || [])].find(isAudioFile);
+        if (!file) return;
+        try {
+            await setSongFromFile(node, file);
+        } catch (exc) {
+            window.alert(exc?.message || String(exc));
+        }
+    });
+    const widget = node.addDOMWidget("song", "div", root, {
+        serialize: false,
+        hideOnConnect: false,
+        getMinHeight: () => 28,
+        getHeight: () => 28,
+    });
+    if (widget) {
+        widget.serialize = false;
+        setWidgetOption(widget, "hideOnConnect", false);
+        keepDomVisibleWhenWired(widget);
+        widget.computeSize = function () {
+            if (this.hidden) return [0, -4];
+            return [node.size?.[0] || 200, 28];
+        };
+    }
+    const input = findInput(node, "song");
+    if (input) {
+        input.label = "song";
+        if (!input.widget) input.widget = widget;
+    }
+    node.__h3SongDrop = { root, face, label, widget, fileInput };
+    syncSongDropWidget(node);
+    return widget;
+}
+
+function decodeWidgetsValues(values) {
+    if (!Array.isArray(values) || !values.length) return null;
+    const durationOf = (value) => {
+        const n = Number(value);
+        return Number.isFinite(n) && n >= MIN_DURATION_SEC ? n : NaN;
+    };
+    if (Number.isFinite(durationOf(values[2]))) {
+        return {
+            state_json: values[0],
+            mode: values[1],
+            max_clip_duration: values[2],
+            segments: values[3],
+            loop: values[4],
+            song_file: values[5],
+            lyrics: values[6],
+        };
+    }
+    if (typeof values[2] === "string" && Number.isFinite(durationOf(values[6]))) {
+        return {
+            state_json: values[0],
+            mode: values[1],
+            song_file: values[2],
+            lyrics: values[3],
+            loop: values[4],
+            segments: values[5],
+            max_clip_duration: values[6],
+        };
+    }
+    return null;
+}
+
+function applyNamedWidgetValues(node, values) {
+    const named = decodeWidgetsValues(values);
+    if (!named) return;
+    for (const name of SERIAL_WIDGETS) {
+        if (named[name] === undefined) continue;
+        const widget = findWidget(node, name);
+        if (widget) widget.value = named[name];
+    }
+}
+
 function syncModeUi(node) {
     const music = isMusicVideoMode(node);
+    const lyricsLinked = lyricsSocketLinked(node);
+    ensureSongDropWidget(node);
+    ensureLyricsSocket(node);
+    hideSongFileWidget(node);
     setWidgetVisible(findWidget(node, "segments"), !music);
-    setInputVisible(node, "segments", !music);
+    setWidgetVisible(findWidget(node, "loop"), !music);
+    const songWidget = node.__h3SongDrop?.widget || findWidget(node, "song");
+    if (songWidget) {
+        setWidgetOption(songWidget, "hideOnConnect", false);
+        keepDomVisibleWhenWired(songWidget);
+        setWidgetVisible(songWidget, music);
+        if (music) {
+            songWidget.computeSize = function () {
+                return [node.size?.[0] || 200, 28];
+            };
+        }
+    }
+    orderSongBeforeLyrics(node);
+    const lyricsWidget = findWidget(node, "lyrics");
+    if (lyricsWidget) {
+        setWidgetOption(lyricsWidget, "hideOnConnect", false);
+        keepDomVisibleWhenWired(lyricsWidget);
+        lyricsWidget.disabled = Boolean(music && lyricsLinked);
+        if (lyricsWidget.inputEl) lyricsWidget.inputEl.disabled = Boolean(music && lyricsLinked);
+        if (lyricsWidget.element) {
+            lyricsWidget.element.style.pointerEvents = music && lyricsLinked ? "none" : "";
+        }
+    }
+    setWidgetVisible(lyricsWidget, music);
+    syncModeSlots(node);
+    syncSongDropWidget(node);
     hideModeWidget(node);
     const ui = node.__h3BuilderUi;
     ui?.syncModeButtons?.();
     if (ui?.hint) {
         ui.hint.textContent = music
-            ? "Drop image / video here, or wire them to Media. Audio refs are disabled in Music Video mode."
+            ? "Drop a song on the song row. Drop image / video / audio on the list, or wire them to Media. Audio refs are unused in Music Video mode."
             : "Drop image / video / audio here, or wire them to Media. Drag a thumbnail or handle to reorder. Right-click a reference for details.";
     }
     ui?.render?.();
@@ -440,6 +782,54 @@ function syncModelInputs(node) {
     refreshNodeLayout(node);
 }
 
+function lastPinnedInputIndex(node) {
+    let last = node.inputs.findIndex((slot) => slot?.name === "media");
+    for (let i = 1; i <= MAX_MODELS; i++) {
+        const idx = node.inputs.findIndex((slot) => slot?.name === `model_${i}`);
+        if (idx > last) last = idx;
+    }
+    return last;
+}
+
+function detachModeInput(node, name) {
+    const widget = findWidget(node, name);
+    if (widget) setWidgetOption(widget, "socketless", true);
+    removeInputByName(node, name);
+}
+
+function attachModeInput(node, name, type, index) {
+    const widget = findWidget(node, name);
+    if (widget) setWidgetOption(widget, "socketless", undefined);
+    ensureInputAt(node, name, type, index);
+    const input = findInput(node, name);
+    if (!input) return;
+    input.hidden = false;
+    input.type = type;
+    input.label = name;
+    if (widget && !input.widget) input.widget = widget;
+}
+
+function syncModeSlots(node) {
+    if (!Array.isArray(node.inputs)) return;
+    const music = isMusicVideoMode(node);
+    for (const name of ["song_file", "state_json", "mode"]) detachModeInput(node, name);
+    if (music) {
+        detachModeInput(node, "segments");
+        detachModeInput(node, "loop");
+        let at = lastPinnedInputIndex(node) + 1;
+        if (at < 0) at = 0;
+        attachModeInput(node, "song", "AUDIO", at);
+        attachModeInput(node, "lyrics", "STRING", at + 1);
+        return;
+    }
+    detachModeInput(node, "song");
+    detachModeInput(node, "lyrics");
+    let at = lastPinnedInputIndex(node) + 1;
+    if (at < 0) at = 0;
+    attachModeInput(node, "segments", "INT", at);
+    attachModeInput(node, "loop", "BOOLEAN", at + 1);
+}
+
 function defaultState() {
     return { media: [], models: [], include_skill: false, plan: "" };
 }
@@ -474,7 +864,10 @@ function formatDump(node, state, slots) {
     if (state?.include_skill) lines.push(skillSlash(node));
     lines.push("H3 Studio Builder pack");
     lines.push(`duration: ${builderDuration(node).toFixed(2)}s`);
-    if (!music) lines.push(`segments: ${builderSegments(node)}`);
+    if (!music) {
+        lines.push(`segments: ${builderSegments(node)}`);
+        if (builderLoop(node)) lines.push("loop: true");
+    }
     let modelN = 0;
     for (const slot of slots) {
         const meta = state.models.find((item) => Number(item?.slot) === slot) || {};
@@ -515,27 +908,26 @@ function formatDump(node, state, slots) {
 function hideStateWidget(node) {
     const widget = findWidget(node, "state_json");
     if (!widget) return;
-    widget.hidden = true;
     widget.serialize = true;
-    if (widget.options) widget.options.hidden = true;
-    widget.computeSize = () => [0, -4];
+    setWidgetVisible(widget, false);
 }
 
 function hideModeWidget(node) {
     const widget = findWidget(node, "mode");
     if (!widget) return;
-    widget.hidden = true;
     widget.serialize = true;
-    if (widget.options) widget.options.hidden = true;
-    widget.computeSize = () => [0, -4];
+    setWidgetVisible(widget, false);
 }
 
 function setMode(node, mode) {
     const widget = findWidget(node, "mode");
     const next = mode === MODE_MUSIC_VIDEO ? MODE_MUSIC_VIDEO : MODE_AUTO_CHAIN;
-    if (widget && widget.value !== next) {
+    const prev = widget?.value;
+    if (widget && prev !== next) {
         widget.value = next;
+        if (widget._state) widget._state.value = next;
         widget.callback?.(next, node, widget);
+        node.onWidgetChanged?.("mode", next, prev, widget);
     }
     syncModeUi(node);
 }
@@ -543,7 +935,30 @@ function setMode(node, mode) {
 function persist(node, state) {
     const widget = findWidget(node, "state_json");
     if (widget) widget.value = JSON.stringify(state);
-    node.widgets_values = node.widgets?.map((item) => item?.value);
+    node.widgets_values = SERIAL_WIDGETS.map((name) => findWidget(node, name)?.value);
+}
+
+async function uploadSongFile(file) {
+    const body = new FormData();
+    body.append("image", file);
+    const response = await api.fetchApi("/upload/image", { method: "POST", body });
+    const payload = await response.json();
+    if (!response.ok) {
+        throw new Error(payload?.error || `upload failed (${response.status})`);
+    }
+    return payload;
+}
+
+async function setSongFromFile(node, file) {
+    if (songSocketLinked(node)) return;
+    const widget = findWidget(node, "song_file");
+    if (!widget) return;
+    const info = await uploadSongFile(file);
+    const name = info.name || file.name;
+    widget.value = name;
+    widget.callback?.(name, node, widget);
+    syncSongDropWidget(node);
+    refreshNodeLayout(node);
 }
 
 setOnVirtualLinksChanged((node) => {
@@ -1721,7 +2136,13 @@ function ensureUi(node) {
     const copyBtn = root.querySelector("[data-act=copy]");
     const musicBtn = root.querySelector('[data-mode="music_video"]');
     if (musicBtn) musicBtn.title = MUSIC_VIDEO_SONG_TIP;
-    root.querySelector(".h3-builder-mode")?.addEventListener("click", (event) => {
+    const modeBar = root.querySelector(".h3-builder-mode");
+    modeBar?.addEventListener("pointerdown", (event) => {
+        if (!event.target.closest("[data-mode]")) return;
+        event.preventDefault();
+        event.stopPropagation();
+    });
+    modeBar?.addEventListener("click", (event) => {
         const btn = event.target.closest("[data-mode]");
         if (!btn) return;
         event.preventDefault();
@@ -1800,7 +2221,7 @@ function ensureUi(node) {
         }
         if (ui.hint) {
             ui.hint.textContent = music
-                ? "Drop image / video here, or wire them to Media. Audio refs are disabled in Music Video mode."
+                ? "Drop a song on the song row. Drop image / video / audio on the list, or wire them to Media. Audio refs are unused in Music Video mode."
                 : "Drop image / video / audio here, or wire them to Media. Drag a thumbnail or handle to reorder. Right-click a reference for details.";
         }
         const skillToggle = root.querySelector("[data-act=skill-slash]");
@@ -1844,7 +2265,7 @@ function ensureUi(node) {
         ui.fileDragDepth = 0;
         list.classList.remove("h3-builder-drop-target");
         const files = [...(event.dataTransfer?.files || [])];
-        if (files.length) void addFiles(files);
+        if (files.length && takeFileDrop(node)) void addFiles(files);
     });
     root.querySelector("[data-act=upload]").addEventListener("click", () => fileInput.click());
     root.querySelector("[data-act=skill-slash]")?.addEventListener("change", (event) => {
@@ -1898,6 +2319,7 @@ function ensureUi(node) {
 
     ui.render = render;
     ui.save = save;
+    ui.addFiles = addFiles;
     attachPlanEditor(node);
     render();
     return ui;
@@ -2075,18 +2497,67 @@ function installSizeGuard(node) {
     ensureMinSize(node);
 }
 
+function installSongDrop(node) {
+    if (node.__h3BuilderSongDrop) return;
+    node.__h3BuilderSongDrop = true;
+    const previousOver = node.onDragOver;
+    node.onDragOver = function (event) {
+        if (!isFileDrag(event)) return previousOver?.apply(this, arguments);
+        const zone = dropTargetZone(this, event);
+        if (zone === "song" && isMusicVideoMode(this) && !songSocketLinked(this)) return true;
+        if (zone === "list") return true;
+        return previousOver?.apply(this, arguments);
+    };
+    const previousDrop = node.onDragDrop;
+    node.onDragDrop = async function (event) {
+        const files = [...(event?.dataTransfer?.files || [])];
+        if (!files.length) return previousDrop?.apply(this, arguments) ?? false;
+        const zone = dropTargetZone(this, event);
+        if (zone === "song" && isMusicVideoMode(this) && !songSocketLinked(this)) {
+            const audio = files.find(isAudioFile);
+            if (audio && takeFileDrop(this)) {
+                try {
+                    await setSongFromFile(this, audio);
+                } catch (exc) {
+                    window.alert(exc?.message || String(exc));
+                }
+                return true;
+            }
+        }
+        if (zone === "list") {
+            const add = this.__h3BuilderUi?.addFiles;
+            if (add && takeFileDrop(this)) {
+                await add(files);
+                return true;
+            }
+        }
+        return previousDrop?.apply(this, arguments) ?? false;
+    };
+}
+
 function install(node) {
     if (!isTarget(node)) return;
+    applyNamedWidgetValues(node, node.__h3SavedWidgetValues);
     hideStateWidget(node);
     hideModeWidget(node);
+    hideSongFileWidget(node);
     installSizeGuard(node);
-    const durationWidget = findWidget(node, "duration");
+    installSongDrop(node);
+    const durationWidget = findWidget(node, "max_clip_duration");
     if (durationWidget) {
         durationWidget.options ||= {};
         durationWidget.options.socket = true;
         durationWidget.options.display = "number";
         if (durationWidget.type === "slider") durationWidget.type = "number";
     }
+    for (const name of ["segments", "loop"]) {
+        const widget = findWidget(node, name);
+        if (!widget) continue;
+        widget.options ||= {};
+        widget.options.socket = true;
+    }
+    ensureSongDropWidget(node);
+    ensureLyricsSocket(node);
     syncModelInputs(node);
     pruneTransportInputsFromNode(node);
     labelMediaInput(node);
@@ -2114,9 +2585,21 @@ app.registerExtension({
         const originalOnConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info, ...rest) {
             captureNodeSize(this, info?.size);
+            this.__h3SavedWidgetValues = info?.widgets_values;
             const result = originalOnConfigure?.apply(this, [info, ...rest]);
+            applyNamedWidgetValues(this, this.__h3SavedWidgetValues);
             queueMicrotask(() => install(this));
             return result;
+        };
+        const originalOnConnectInput = nodeType.prototype.onConnectInput;
+        nodeType.prototype.onConnectInput = function (slot, ...args) {
+            const input = this.inputs?.[slot];
+            if (input?.hidden) return false;
+            const name = String(input?.name || "");
+            const music = isMusicVideoMode(this);
+            if (!music && (name === "song" || name === "lyrics")) return false;
+            if (music && (name === "segments" || name === "loop")) return false;
+            return originalOnConnectInput?.apply(this, [slot, ...args]) ?? true;
         };
         const originalOnConnectionsChange = nodeType.prototype.onConnectionsChange;
         nodeType.prototype.onConnectionsChange = function (...args) {
@@ -2126,6 +2609,7 @@ app.registerExtension({
                 pruneTransportInputsFromNode(this);
                 labelMediaInput(this);
                 syncModelInputs(this);
+                syncModeUi(this);
                 const ui = this.__h3BuilderUi;
                 if (ui?.state && syncBuilderMediaList(this, ui.state)) persist(this, ui.state);
                 ui?.render?.();
@@ -2138,7 +2622,7 @@ app.registerExtension({
             const result = originalOnWidgetChanged?.apply(this, arguments);
             const widgetName = widget?.name ?? name;
             if (widgetName === "mode") queueMicrotask(() => syncModeUi(this));
-            if (widgetName === "duration" || widgetName === "segments") {
+            if (widgetName === "max_clip_duration" || widgetName === "segments") {
                 queueMicrotask(() => {
                     clampAllRegions(this);
                     this.__h3BuilderUi?.save?.();

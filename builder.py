@@ -277,6 +277,17 @@ def clamp_segments(value) -> int:
     return max(1, min(int(MAX_SEGMENTS), int(value)))
 
 
+def resolve_builder_song(song, song_file):
+    if isinstance(song, dict) and song.get("waveform") is not None:
+        return song
+    name = str(song_file or "").strip()
+    if not name:
+        return None
+    if not folder_paths.exists_annotated_filepath(name):
+        raise ValueError(f"h3_studio: invalid song file: {name}")
+    return load_song_audio(folder_paths.get_annotated_filepath(name))
+
+
 def resolve_region(start, length, source_dur, max_len) -> tuple[float, float]:
     source = max(0.0, float(source_dur or 0.0))
     cap = max(MIN_CLIP_SEC, min(MAX_CLIP_SEC, float(max_len or MAX_DURATION)))
@@ -642,15 +653,15 @@ class H3StudioBuilder:
                         "Music Video disables audio refs (the song occupies Audio 1)."
                     ),
                 }),
-                "duration": ("FLOAT", {
+                "max_clip_duration": ("FLOAT", {
                     "default": DEFAULT_DURATION,
                     "min": MIN_DURATION,
                     "max": MAX_DURATION,
                     "step": 0.1,
                     "display": "number",
                     "tooltip": (
-                        "Requested clip length in seconds. Wire duration into Auto Chain or "
-                        "Music Video. Music Video treats this as the per-clip maximum."
+                        "Requested clip length in seconds. Music Video treats this as the "
+                        "per-clip maximum. Travels with the pack."
                     ),
                 }),
                 "segments": ("INT", {
@@ -663,8 +674,33 @@ class H3StudioBuilder:
                         "Wire segments into Auto Chain."
                     ),
                 }),
+                "loop": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": (
+                        "Auto Chain loop clip that returns to clip 1. Hidden in Music Video mode. "
+                        "Travels with the pack for Local Prompter."
+                    ),
+                }),
+                "song_file": ("STRING", {
+                    "default": "",
+                    "hidden": True,
+                    "tooltip": "Uploaded song filename used when the song socket is empty.",
+                }),
+                "lyrics": ("STRING", {
+                    "multiline": True, "default": "", "dynamicPrompts": False,
+                    "tooltip": (
+                        "Confirm-format LRC lyrics for Music Video. Wire Load Song lyrics, "
+                        "or paste here. Hidden in Auto Chain mode."
+                    ),
+                }),
             },
             "optional": {
+                "song": ("AUDIO", {
+                    "tooltip": (
+                        "Source song for Music Video. Click or drop a file on the widget, "
+                        "or wire Load Song. A connection disables the upload widget."
+                    ),
+                }),
                 "media": ("*", {
                     "tooltip": (
                         "Connect IMAGE, VIDEO, or AUDIO. Multiple wires to this socket "
@@ -690,26 +726,28 @@ class H3StudioBuilder:
             },
         }
 
-    RETURN_TYPES = ("H3_STUDIO_PACK", "FLOAT")
-    RETURN_NAMES = ("pack", "duration")
+    RETURN_TYPES = ("H3_STUDIO_PACK",)
+    RETURN_NAMES = ("pack",)
     OUTPUT_TOOLTIPS = (
-        "Pack of enabled models and media for Auto Chain Advanced / Music Video Advanced.",
-        "Clip duration in seconds. Wire into Auto Chain or Music Video duration.",
+        "Pack of enabled models and media for Auto Chain / Music Video. "
+        "Duration, clip count, loop, song, and lyrics travel with the pack.",
     )
     FUNCTION = "build_pack"
     CATEGORY = "H3 Studio"
     DESCRIPTION = (
         "Drop images, videos, and audio, wire extra media to Media, connect patched H3 models, "
-        "then output a pack plus duration for Auto Chain Advanced or Music Video Advanced. "
-        "Music Video mode disables audio refs. Copy pack summary for the prompt skills."
+        "then output a pack for Auto Chain or Music Video. "
+        "Music Video mode disables audio refs and shows song plus lyrics. "
+        "Plan, max clip duration, clip count, loop, song, and lyrics travel with the pack."
     )
 
-    def build_pack(self, model_1, mode=MODE_AUTO_CHAIN, duration=DEFAULT_DURATION,
-                  segments=DEFAULT_SEGMENTS, state_json="{}", **kwargs):
+    def build_pack(self, model_1, mode=MODE_AUTO_CHAIN, max_clip_duration=DEFAULT_DURATION,
+                  segments=DEFAULT_SEGMENTS, loop=False, song_file="", lyrics="",
+                  song=None, state_json="{}", **kwargs):
         kwargs = dict(kwargs)
         kwargs["model_1"] = model_1
         mode = normalize_mode(mode)
-        duration = clamp_duration(duration)
+        duration = clamp_duration(max_clip_duration)
         state = parse_state(state_json)
         models = collect_builder_models(kwargs, state)
         pictures, videos, audios = load_enabled_media(
@@ -717,7 +755,7 @@ class H3StudioBuilder:
             segments=clamp_segments(segments), sockets=collect_socket_media(kwargs),
         )
         assert_ref_caps(pictures, videos, audios)
-        return ({
+        pack = {
             "models": models,
             "pictures": pictures,
             "videos": videos,
@@ -725,16 +763,39 @@ class H3StudioBuilder:
             "plan": str(state.get("plan") or "").strip(),
             "duration": duration,
             "segments": clamp_segments(segments),
-        }, duration)
+            "loop": bool(loop) and mode == MODE_AUTO_CHAIN,
+        }
+        if mode == MODE_MUSIC_VIDEO:
+            pack["song"] = resolve_builder_song(song, song_file)
+            pack["lyrics"] = str(lyrics or "").strip()
+        return (pack,)
 
     @classmethod
-    def IS_CHANGED(cls, model_1, mode=MODE_AUTO_CHAIN, duration=DEFAULT_DURATION,
-                   segments=DEFAULT_SEGMENTS, state_json="{}", **kwargs):
+    def IS_CHANGED(cls, model_1, mode=MODE_AUTO_CHAIN, max_clip_duration=DEFAULT_DURATION,
+                   segments=DEFAULT_SEGMENTS, loop=False, song_file="", lyrics="",
+                   song=None, state_json="{}", **kwargs):
         digest = hashlib.sha256()
         mode = normalize_mode(mode)
         digest.update(mode.encode("utf-8"))
-        digest.update(f"{clamp_duration(duration):.3f}".encode("utf-8"))
+        digest.update(f"{clamp_duration(max_clip_duration):.3f}".encode("utf-8"))
         digest.update(str(clamp_segments(segments)).encode("utf-8"))
+        digest.update(str(bool(loop)).encode("utf-8"))
+        digest.update(str(lyrics or "").encode("utf-8"))
+        digest.update(str(song_file or "").encode("utf-8"))
+        if song is not None:
+            digest.update(b"song:wired")
+            if isinstance(song, dict):
+                wave = song.get("waveform")
+                if wave is not None:
+                    digest.update(str(tuple(wave.shape)).encode("utf-8"))
+                digest.update(str(song.get("sample_rate") or "").encode("utf-8"))
+        elif str(song_file or "").strip() and folder_paths.exists_annotated_filepath(song_file):
+            try:
+                st = os.stat(folder_paths.get_annotated_filepath(song_file))
+                digest.update(str(st.st_mtime_ns).encode("utf-8"))
+                digest.update(str(st.st_size).encode("utf-8"))
+            except Exception:
+                pass
         digest.update(str(state_json or "").encode("utf-8"))
         try:
             state = parse_state(state_json)

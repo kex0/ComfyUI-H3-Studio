@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from prompt_document import (
     assemble_auto_chain_document,
+    assemble_music_video_document,
     document_has_loop,
     duration_and_segments_from_pack_or_prompt,
     expand_clip,
@@ -108,6 +109,50 @@ overall_soundscape: <Audio 1> reused as-is.
 non_diegetic_music: N/A
 """
 
+PER_CLIP = """H3 Studio prompt
+mode: auto_chain
+duration: 10.00
+segments: 2
+loop: false
+
+## Clip 1 — Start
+subject_definitions:
+<Subject 1> is the woman in <Picture 1>, matching that still's face, hair, and wardrobe.
+<Picture 1> is the first frame of [Shot 1], showing a blonde woman in a red jacket.
+
+summary:
+[keyframe completion + reference generation] She starts walking.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same face.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] She is already in the still's pose, then steps forward.
+
+overall_soundscape: rain
+
+non_diegetic_music: N/A
+
+## Clip 2 — Finish
+subject_definitions:
+<Subject 1> is the woman in <Picture 2>, matching that still's face, hair, and wardrobe.
+
+summary:
+[video continuation + reference generation] She keeps walking.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same jacket.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] She is already mid-stride and keeps walking.
+
+overall_soundscape: rain on pavement
+
+non_diegetic_music: N/A
+"""
+
 
 def test_header_blank_lines_still_parse():
     spaced = DOC.replace("mode: auto_chain\nduration:", "mode: auto_chain\n\nduration:")
@@ -160,6 +205,9 @@ def test_assemble_roundtrip_and_loop():
     assert any(clip.get("is_loop") for clip in parsed["clips"])
     loop_body = expand_clip(parsed, 2, is_loop=True)
     assert "<Picture 1> is the first frame of [Shot 1]" not in loop_body
+    assert parsed["shared_subjects"] == ""
+    assert "<Picture 1> is the first frame" in parsed["clips"][0]["local_subjects"]
+    assert "<Picture 1> is the first frame" not in parsed["clips"][1]["local_subjects"]
 
 
 def test_music_video_unified_audio_cover():
@@ -213,3 +261,57 @@ def test_document_has_loop_and_per_clip_resolve():
     )
     assert bodies == ["clip one", "clip two"]
     assert loop == "loop body"
+
+
+def test_per_clip_subjects_choose_dump_refs():
+    parsed = parse_prompt_document(PER_CLIP)
+    assert parsed["shared_subjects"] == ""
+    start = expand_clip(parsed, 1)
+    cont = expand_clip(parsed, 2)
+    assert "<Picture 1> is the first frame of [Shot 1]" in start
+    assert "<Picture 2>" not in start
+    assert "<Picture 2>" in cont
+    assert "<Picture 1>" not in cont
+    assembled = assemble_auto_chain_document(
+        10.0, 2, False,
+        [("Start", start, False), ("Finish", cont, False)],
+    )
+    roundtrip = parse_prompt_document(assembled)
+    assert roundtrip["shared_subjects"] == ""
+    assert "<Picture 1>" in roundtrip["clips"][0]["local_subjects"]
+    assert "<Picture 2>" in roundtrip["clips"][1]["local_subjects"]
+    assert "<Picture 2>" not in roundtrip["clips"][0]["local_subjects"]
+    assert "<Picture 1>" not in expand_clip(roundtrip, 2)
+
+
+def test_assemble_music_video_keeps_per_clip_subjects():
+    assembled = assemble_music_video_document(10.125, [
+        {
+            "index": 1, "time": (0.0, 9.125), "duration_seconds": 10.125,
+            "slice": 0.0, "audio": (0.0, 10.125), "lyrics": "[00:01.000-00:03.000] hello",
+            "prompt": (
+                "subject_definitions:\n"
+                "<Subject 1> is the singer in <Picture 1>.\n"
+                "<Audio 1> is the source-song slice covering 0.000–10.125 of the master.\n"
+                "summary:\nopens\nretention_analysis:\nx\n"
+                "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n"
+            ),
+        },
+        {
+            "index": 2, "time": (9.125, 18.25), "duration_seconds": 10.125,
+            "slice": 8.208, "audio": (8.208, 18.333), "lyrics": "[00:12.000-00:14.000] next",
+            "prompt": (
+                "subject_definitions:\n"
+                "<Subject 1> is the singer in <Picture 2>.\n"
+                "<Audio 1> is the source-song slice covering 8.208–18.333 of the master.\n"
+                "summary:\ncontinues\nretention_analysis:\nx\n"
+                "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n"
+            ),
+        },
+    ])
+    parsed = parse_prompt_document(assembled, mode="music_video")
+    assert parsed["shared_subjects"] == ""
+    assert "<Picture 1>" in parsed["clips"][0]["local_subjects"]
+    assert "<Picture 2>" in parsed["clips"][1]["local_subjects"]
+    assert "<Picture 1>" not in parsed["clips"][1]["local_subjects"]
+    assert "covering 8.208–18.333" in expand_clip(parsed, 2, song_audio=True)

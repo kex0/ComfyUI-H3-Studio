@@ -58,9 +58,21 @@ def test_require_pack_keeps_duration_and_segments():
         "models": [_item(1, model="m")],
         "duration": 10.0,
         "segments": 3,
+        "plan": "walk",
+        "loop": True,
     })
     assert got["duration"] == 10.0
     assert got["segments"] == 3
+    assert got["plan"] == "walk"
+    assert got["loop"] is True
+    assert got["lyrics"] == ""
+    with_song = pack.require_pack({
+        "models": [_item(1, model="m")],
+        "song": {"waveform": "w", "sample_rate": 48000},
+        "lyrics": "[00:00.000-00:02.000] hello",
+    })
+    assert with_song["song"]["sample_rate"] == 48000
+    assert with_song["lyrics"] == "[00:00.000-00:02.000] hello"
     assert "pictures" in got
 
 
@@ -213,10 +225,24 @@ def test_format_builder_dump_enabled_labels():
         plan="two women talk in a kitchen",
     )
     assert "plan:\ntwo women talk in a kitchen" in planned
+    timed = pack.format_builder_dump(
+        [_item(1, description="cinematic identity LoRA stack")],
+        [],
+        [],
+        [],
+        plan="stay in place",
+        duration=10.0,
+        segments=1,
+        loop=True,
+    )
+    assert "duration: 10.00s" in timed
+    assert "segments: 1" in timed
+    assert "loop: true" in timed
     builder = (ROOT / "builder.py").read_text(encoding="utf-8")
     assert '"plan": str(state.get("plan")' in builder
     assert '"duration": duration' in builder
     assert '"segments": clamp_segments(segments)' in builder
+    assert '"loop": bool(loop)' in builder
     builder_js = (ROOT / "web" / "js" / "builder.js").read_text(encoding="utf-8")
     assert 'data-act="plan"' in builder_js
     assert "h3-builder-plan-host" in builder_js
@@ -234,6 +260,75 @@ def test_format_builder_dump_enabled_labels():
     assert "mountPromptEditor" in builder_js
     assert "attachPlanEditor" in builder_js
     assert "plan:" in builder_js
+    assert "builderLoop" in builder_js
+    assert "loop: true" in builder_js
+    assert 'setWidgetVisible(findWidget(node, "loop"), !music)' in builder_js
+    assert "function detachModeInput(node, name)" in builder_js
+    assert '"loop": ("BOOLEAN"' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert '"max_clip_duration": ("FLOAT"' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert '"song": ("AUDIO"' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert '"song_file": ("STRING"' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert '"hidden": True' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert '"lyrics": ("STRING"' in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert "builder_song_choices" not in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert "audio_upload" not in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert "resolve_builder_song" in (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert "ensureSongDropWidget" in builder_js
+    assert "ensureLyricsSocket" in builder_js
+    assert 'addDOMWidget("song"' in builder_js
+    assert "Drop song or click to upload" in builder_js
+    assert "setWidgetVisible(lyricsWidget, music)" in builder_js
+    assert "SERIAL_WIDGETS" in builder_js
+    assert '"max_clip_duration", "segments", "loop", "song_file", "lyrics"' in builder_js
+    assert "function decodeWidgetsValues(values)" in builder_js
+    assert "function applyNamedWidgetValues(node, values)" in builder_js
+    assert "node.widgets_values = SERIAL_WIDGETS.map" in builder_js
+    assert "placeWidgetBefore" not in builder_js
+    assert "orderTimingWidgets" not in builder_js
+    assert "hideOnConnect: false" in builder_js
+    assert "hideOnConnect: true" not in builder_js
+    assert 'setWidgetOption(widget, "hideOnConnect", false)' in builder_js
+    assert "function setWidgetOption(widget, key, value)" in builder_js
+    assert "widget._state?.options" in builder_js
+    assert "node._widgetSlotsDirty = true" in builder_js
+    assert "function syncModeSlots(node)" in builder_js
+    assert "function detachModeInput(node, name)" in builder_js
+    assert "function attachModeInput(node, name, type, index)" in builder_js
+    assert 'attachModeInput(node, "song", "AUDIO", at)' in builder_js
+    assert 'attachModeInput(node, "lyrics", "STRING", at + 1)' in builder_js
+    assert "function dropTargetZone(node, event)" in builder_js
+    assert "function takeFileDrop(node)" in builder_js
+    assert "function orderSongBeforeLyrics(node)" in builder_js
+    assert 'if (zone === "song"' in builder_js
+    assert 'if (zone === "list")' in builder_js
+    assert "ui.addFiles = addFiles" in builder_js
+    assert "if (music && isAudioFile(file))" not in builder_js
+    assert "h3-builder-song-name" in builder_js
+    assert "h3-builder-song-value" in builder_js
+    assert "applyNativeWidgetTheme" in builder_js
+    assert 'detachModeInput(node, "song")' in builder_js
+    assert 'detachModeInput(node, "lyrics")' in builder_js
+    assert 'setWidgetOption(widget, "socketless", true)' in builder_js
+    assert "originalOnConnectInput" in builder_js
+    assert 'input.widget = { name: "lyrics" }' not in builder_js
+    assert "if (!input.widget) input.widget = widget" in builder_js
+    assert 'addEventListener("pointerdown"' in builder_js
+    assert "keepDomVisibleWhenWired" in builder_js
+    assert "widget.__h3KeepDomVisible" in builder_js
+    assert "installSongDrop" in builder_js
+    assert "setSongFromFile" in builder_js
+    loader = (ROOT / "song_loader.py").read_text(encoding="utf-8")
+    assert 'RETURN_NAMES = ("song", "lyrics")' in loader
+    assert 'RETURN_TYPES = ("AUDIO", "STRING")' in loader
+    assert 'RETURN_NAMES = ("audio", "lyrics", "duration")' not in loader
+
+
+def test_resolve_builder_song_prefers_wired_audio():
+    builder = (ROOT / "builder.py").read_text(encoding="utf-8")
+    assert "def resolve_builder_song(song, song_file):" in builder
+    assert 'isinstance(song, dict) and song.get("waveform") is not None' in builder
+    assert 'raise ValueError(f"h3_studio: invalid song file: {name}")' in builder
+    assert "load_song_audio(folder_paths.get_annotated_filepath(name))" in builder
 
 
 def test_pack_first_frame_uses_marked_picture():
@@ -294,32 +389,32 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     init = (ROOT / "__init__.py").read_text(encoding="utf-8")
     builder = (ROOT / "builder.py").read_text(encoding="utf-8")
     builder_js = (ROOT / "web" / "js" / "builder.js").read_text(encoding="utf-8")
-    adv_auto = auto_chain.split("class H3StudioAutoChainAdvanced", 1)[1]
-    adv_mv = music_video.split("class H3StudioMusicVideoAdvanced", 1)[1]
-    assert '"pack": ("H3_STUDIO_PACK"' in adv_auto
-    assert 'required.pop("model_1"' in adv_auto
-    assert 'required.pop("duration"' in adv_auto
-    assert 'required.pop("segments"' in adv_auto
-    assert 'required.pop("loop_prompt"' in adv_auto
-    assert 'required.pop(f"prompt_{i}"' in adv_auto
-    assert "prompt_mode" in adv_auto
-    assert 'optional["prompt_mode"]' in adv_auto
-    assert "document_has_loop" in adv_auto
-    assert "duration_and_segments_from_pack_or_prompt" in adv_auto
-    assert 'startswith("reference_image")' in adv_auto
-    assert 'startswith("model_")' in adv_auto
-    assert '"pack": ("H3_STUDIO_PACK"' in adv_mv
-    assert 'required.pop("model_1"' in adv_mv
-    assert 'required.pop("duration"' in adv_mv
-    assert "duration_and_segments_from_pack_or_prompt" in adv_mv
-    assert "H3StudioAutoChainAdvanced" in init
-    assert "H3 Studio - Auto Chain Advanced" in init
-    assert "H3StudioMusicVideoAdvanced" in init
-    assert "H3 Studio - Music Video Advanced" in init
+    assert "H3StudioAutoChainAdvanced" not in auto_chain
+    assert "H3StudioMusicVideoAdvanced" not in music_video
+    assert '"pack": ("H3_STUDIO_PACK"' in auto_chain
+    assert 'required.pop("duration"' in auto_chain
+    assert 'required.pop("segments"' in auto_chain
+    assert 'required.pop("loop_prompt"' in auto_chain
+    assert 'required.pop(f"prompt_{i}"' in auto_chain
+    assert "prompt_mode" in auto_chain
+    assert 'optional["prompt_mode"]' in auto_chain
+    assert "document_has_loop" in auto_chain
+    assert "duration_and_segments_from_pack_or_prompt" in auto_chain
+    assert '"pack": ("H3_STUDIO_PACK"' in music_video
+    assert '"song": ("AUDIO"' not in music_video
+    assert 'required.pop("duration"' in music_video
+    assert "duration_and_segments_from_pack_or_prompt" in music_video
+    assert "H3StudioAutoChainAdvanced" not in init
+    assert "H3 Studio - Auto Chain Advanced" not in init
+    assert "H3StudioMusicVideoAdvanced" not in init
+    assert "H3 Studio - Music Video Advanced" not in init
+    assert '"H3StudioAutoChain": H3StudioAutoChain' in init
+    assert '"H3StudioMusicVideo": H3StudioMusicVideo' in init
     assert "H3StudioBuilder" in init
     assert "H3 Studio - Builder" in init
-    assert 'RETURN_TYPES = ("H3_STUDIO_PACK", "FLOAT")' in builder
-    assert "RETURN_NAMES = (\"pack\", \"duration\")" in builder
+    assert 'RETURN_TYPES = ("H3_STUDIO_PACK",)' in builder
+    assert 'RETURN_NAMES = ("pack",)' in builder
+    assert 'RETURN_NAMES = ("pack", "max_clip_duration")' not in builder
     assert '"model_1"' in builder
     assert "model_{i}" in builder
     assert "MAX_MODELS" in builder
@@ -419,7 +514,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "max(1, int(FPS) // 2)" in nodes
     assert "kind\": \"video_audio\"" in nodes or '"kind": "video_audio"' in nodes
     js_seg = (ROOT / "web" / "js" / "autoChainSegmentVisibility.js").read_text(encoding="utf-8")
-    assert "H3StudioAutoChainAdvanced" in js_seg
+    assert "H3StudioAutoChain" in js_seg
+    assert "H3StudioAutoChainAdvanced" not in js_seg
     assert "hideLegacyPromptWidgets" in js_seg
     assert "./nodeSize.js" in js_seg
     assert "restoreNodeSizeSoon" in js_seg

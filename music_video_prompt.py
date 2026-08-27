@@ -7,10 +7,6 @@ Preferred shape (from /prompt_minimax_h3_music_video):
     duration: 10.125
     segments: 2
 
-    subject_definitions:
-    <Subject 1> is ...
-    <Audio 1> is the source-song slice covering ...
-
     ## Clip 1 — Start
     time: 0.000-9.125
     duration_seconds: 10.125
@@ -18,6 +14,9 @@ Preferred shape (from /prompt_minimax_h3_music_video):
     audio: 0.000-10.125
     lyrics:
     ...
+    subject_definitions:
+    <Subject 1> is ...
+    <Audio 1> is the source-song slice covering ...
     summary:
     ...
 

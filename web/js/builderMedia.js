@@ -772,7 +772,7 @@ export function pruneTransportInputsFromNode(node) {
 export function labelMediaInput(node) {
     const input = node?.inputs?.find((slot) => String(slot?.name || "") === "media");
     if (!input) return;
-    input.label = "Media";
+    input.label = "media";
     input.hidden = false;
     if (!input.type) input.type = "*";
 }

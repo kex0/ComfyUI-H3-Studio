@@ -4,12 +4,18 @@ import { applyCropThumb, hasImageCrop, kindIconSvg, normalizeKind, openPreview }
 import { captureNodeSize, restoreNodeSizeSoon } from "./nodeSize.js";
 
 const PROMPT_NODES = new Set([
-    "H3StudioAutoChain", "H3StudioAutoChainAdvanced",
-    "H3StudioMusicVideo", "H3StudioMusicVideoAdvanced",
+    "H3StudioAutoChain",
+    "H3StudioMusicVideo",
 ]);
-const ADVANCED_AUTO_CHAIN = "H3StudioAutoChainAdvanced";
+const ADVANCED_AUTO_CHAIN = "H3StudioAutoChain";
+const MUSIC_VIDEO = "H3StudioMusicVideo";
 const MAX_CLIP_PROMPTS = 12;
-const MIN_PROMPT_HEIGHT = 50;
+const MIN_PROMPT_HEIGHT = 96;
+const DEFAULT_PROMPT_HEIGHT = 96;
+const PROMPT_HOST_CHROME = 40;
+const PER_CLIP_FIELD_HEIGHT = 100;
+const DEFAULT_NODE_WIDTH = 360;
+const NODE_BODY_CHROME = 54;
 const PROGRESS_WIDGET_NAME = "$$node-text-preview";
 const PROGRESS_HEIGHT = 52;
 const VIEW_PROP = "h3_studio_prompt_view";
@@ -70,7 +76,7 @@ function ensureStyle() {
 }
 .lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) .lg-node-widget:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host),
 .lg-node:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) [data-testid="node-widget"]:has(.h3-studio-prompt-wrap, .h3-studio-prompt-host) {
-  min-height: 50px; min-width: 0;
+  min-height: 96px; min-width: 0; overflow: hidden;
 }
 .dom-widget.h3-studio-progress-pin,
 .dom-widget:has(.h3-studio-progress-pin) {
@@ -78,16 +84,17 @@ function ensureStyle() {
 }
 .h3-studio-prompt-host {
   display: flex; flex-direction: column; gap: 8px; width: 100%; height: 100%;
-  min-width: 0; min-height: 0; box-sizing: border-box;
+  min-width: 0; min-height: 0; max-height: 100%; box-sizing: border-box; overflow: hidden;
 }
 .h3-studio-prompt-mode {
-  display: flex; flex: 0 0 auto; border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
+  display: flex; flex: 0 0 auto; min-width: 0; border: 1px solid rgba(255,255,255,.16); border-radius: 8px;
   overflow: hidden; background: rgba(0,0,0,.18);
 }
 .h3-studio-prompt-mode-btn {
-  flex: 1; appearance: none; display: flex; align-items: center; justify-content: center;
+  flex: 1 1 0; min-width: 0; appearance: none; display: flex; align-items: center; justify-content: center;
   background: transparent; color: rgba(255,255,255,.62); border: 0; border-radius: 0;
-  padding: 6px 8px; cursor: pointer; font: 600 11px/1.2 system-ui, sans-serif;
+  padding: 6px 4px; cursor: pointer; font: 600 11px/1.2 system-ui, sans-serif;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .h3-studio-prompt-mode-btn + .h3-studio-prompt-mode-btn { border-left: 1px solid rgba(255,255,255,.12); }
 .h3-studio-prompt-mode-btn[aria-pressed="true"] { background: rgba(120,185,255,.22); color: #dff; }
@@ -259,6 +266,10 @@ function isAdvancedAutoChain(node) {
     return targetNames(node).has(ADVANCED_AUTO_CHAIN);
 }
 
+function isMusicVideo(node) {
+    return targetNames(node).has(MUSIC_VIDEO);
+}
+
 function setWidgetOption(widget, key, value) {
     if (!widget) return;
     widget.options ||= {};
@@ -325,18 +336,78 @@ function isSerializedDefWidget(widget) {
     return true;
 }
 
+function defInputNames(node) {
+    const data = node?.constructor?.nodeData || {};
+    const order = data.input_order || {};
+    const input = data.input || {};
+    const names = [];
+    for (const group of ["required", "optional"]) {
+        const listed = order[group];
+        if (Array.isArray(listed) && listed.length) {
+            names.push(...listed);
+            continue;
+        }
+        const spec = input[group];
+        if (spec && typeof spec === "object" && !Array.isArray(spec)) names.push(...Object.keys(spec));
+    }
+    return names;
+}
+
+function serializedWidgetsInDefOrder(node) {
+    const widgets = (node.widgets || []).filter(isSerializedDefWidget);
+    const byName = new Map();
+    for (const widget of widgets) {
+        if (widget?.name && !byName.has(widget.name)) byName.set(widget.name, widget);
+    }
+    const ordered = [];
+    const used = new Set();
+    for (const name of defInputNames(node)) {
+        const widget = byName.get(name);
+        if (!widget) continue;
+        used.add(widget);
+        ordered.push(widget);
+    }
+    for (const widget of widgets) {
+        if (!used.has(widget)) ordered.push(widget);
+    }
+    return ordered;
+}
+
 function listedWidgetValues(node) {
-    return (node.widgets || []).filter(isSerializedDefWidget).map((widget) => widget.value);
+    return serializedWidgetsInDefOrder(node).map((widget) => widget.value);
+}
+
+function liftPerClipTimingValues(names, values) {
+    if (!Array.isArray(names) || !Array.isArray(values) || values.length !== names.length) return values;
+    const promptI = names.indexOf("prompt");
+    const durI = names.indexOf("duration");
+    const segI = names.indexOf("segments");
+    const loopI = names.indexOf("seamless_loop");
+    if (promptI < 0 || durI < 0 || segI < 0 || loopI !== promptI + 1) return values;
+    if (typeof values[promptI + 1] !== "number" || typeof values[promptI + 2] !== "number") return values;
+    const loopVal = values[promptI + 3];
+    if (loopVal !== true && loopVal !== false && loopVal !== 0 && loopVal !== 1) return values;
+    const duration = values[promptI + 1];
+    const segments = values[promptI + 2];
+    const next = values.slice();
+    next.splice(promptI + 1, 2);
+    next.splice(durI, 0, duration);
+    next.splice(segI, 0, segments);
+    return next;
 }
 
 function dropDomWidgetValue(node, values) {
     if (!Array.isArray(values)) return values;
-    const expected = (node.widgets || []).filter(isSerializedDefWidget);
-    if (values.length !== expected.length + 1) return values;
-    const promptIndex = expected.findIndex((widget) => widget.name === "prompt");
-    if (promptIndex < 0) return values;
-    const next = values.slice();
-    next.splice(promptIndex + 1, 1);
+    const expected = serializedWidgetsInDefOrder(node);
+    if (!expected.length) return values;
+    const names = expected.map((widget) => widget.name);
+    let next = values.slice();
+    const promptIndex = names.indexOf("prompt");
+    while (next.length > expected.length && promptIndex >= 0) {
+        next.splice(promptIndex + 1, 1);
+    }
+    if (next.length > expected.length) next = next.slice(0, expected.length);
+    if (next.length === expected.length) next = liftPerClipTimingValues(names, next);
     return next;
 }
 
@@ -358,15 +429,25 @@ function findWidget(node, name) {
 }
 
 function visualNodeHeight(node) {
+    const sizeH = Array.isArray(node?.size) ? Number(node.size[1]) : 0;
+    if (Number.isFinite(sizeH) && sizeH > 0) return sizeH;
     const rendered = node?.renderingSize;
     const renderedH = Array.isArray(rendered) ? Number(rendered[1]) : 0;
     const body = Number(node?.bodyHeight);
-    const sizeH = Array.isArray(node?.size) ? Number(node.size[1]) : 0;
-    return Math.max(renderedH || 0, body || 0, sizeH || 0);
+    return Math.max(renderedH || 0, body || 0);
+}
+
+function isCollapsedLayoutWidget(widget) {
+    if (!widget || widget.hidden || widget.type === "hidden") return true;
+    const name = String(widget.name || "");
+    if (name === "prompt" || name === "prompt_mode" || name === "loop_prompt") return true;
+    if (name === "h3_prompt_mentions") return true;
+    if (/^prompt_\d+$/.test(name)) return true;
+    return false;
 }
 
 function widgetLayoutHeight(widget) {
-    if (!widget || widget.hidden || widget.type === "hidden") return 0;
+    if (isCollapsedLayoutWidget(widget)) return 0;
     if (typeof widget.computeSize === "function") {
         const size = widget.computeSize(200);
         const h = Array.isArray(size) ? Number(size[1]) : Number(size);
@@ -375,7 +456,7 @@ function widgetLayoutHeight(widget) {
     }
     const computed = Number(widget.computedHeight);
     if (Number.isFinite(computed) && computed > 0) return computed;
-    return globalThis.LiteGraph?.NODE_WIDGET_HEIGHT || 20;
+    return Math.max(globalThis.LiteGraph?.NODE_WIDGET_HEIGHT || 20, 28);
 }
 
 function trailingWidgetsHeight(node, dom) {
@@ -387,14 +468,40 @@ function trailingWidgetsHeight(node, dom) {
     return height;
 }
 
+function promptMinHeight(node) {
+    if (isAdvancedAutoChain(node) && promptMode(node) === "per_clip") {
+        const fields = Math.max(1, visibleClipEditors(node).length);
+        return PROMPT_HOST_CHROME + fields * PER_CLIP_FIELD_HEIGHT;
+    }
+    return DEFAULT_PROMPT_HEIGHT + (isAdvancedAutoChain(node) ? PROMPT_HOST_CHROME : 0);
+}
+
 function remainingPromptHeight(node, dom) {
     const nodeHeight = visualNodeHeight(node);
     const y = Number(dom?.y ?? dom?.last_y);
     const after = trailingWidgetsHeight(node, dom);
+    const min = Math.max(MIN_PROMPT_HEIGHT, promptMinHeight(node));
     if (Number.isFinite(y) && y > 0 && y < nodeHeight) {
-        return Math.max(MIN_PROMPT_HEIGHT, Math.floor(nodeHeight - y - after));
+        return Math.max(min, Math.floor(nodeHeight - y - after));
     }
-    return MIN_PROMPT_HEIGHT;
+    return min;
+}
+
+function widgetsHeightBefore(node, dom) {
+    const widgets = node?.widgets || [];
+    const end = widgets.indexOf(dom);
+    const last = end < 0 ? widgets.length : end;
+    let height = 0;
+    for (let i = 0; i < last; i++) height += widgetLayoutHeight(widgets[i]);
+    return height;
+}
+
+function fittingPromptNodeHeight(node) {
+    const dom = node.__h3DomWidget;
+    const promptH = promptMinHeight(node);
+    const after = trailingWidgetsHeight(node, dom);
+    const above = widgetsHeightBefore(node, dom);
+    return Math.ceil(NODE_BODY_CHROME + above + promptH + after);
 }
 
 function isProgressWidget(widget) {
@@ -468,7 +575,14 @@ function pinPromptGrid(wrap) {
         rows = [...grid.querySelectorAll(":scope > [data-testid='node-widget'], :scope > .lg-node-widget")];
     }
     const idx = row ? rows.indexOf(row) : -1;
-    const template = rows.map((_, i) => (i === idx ? "minmax(50px, 1fr)" : "min-content")).join(" ");
+    const host = wrap?.closest?.(".h3-studio-prompt-host");
+    const fieldCount = host?.querySelectorAll?.(".h3-studio-prompt-field")?.length || 0;
+    const min = host
+        ? (fieldCount > 1
+            ? PROMPT_HOST_CHROME + fieldCount * PER_CLIP_FIELD_HEIGHT
+            : DEFAULT_PROMPT_HEIGHT + PROMPT_HOST_CHROME)
+        : DEFAULT_PROMPT_HEIGHT;
+    const template = rows.map((_, i) => (i === idx ? `minmax(${min}px, 1fr)` : "min-content")).join(" ");
     if (template && grid.style.getPropertyValue("grid-template-rows") !== template) {
         grid.style.setProperty("grid-template-rows", template, "important");
     }
@@ -476,16 +590,17 @@ function pinPromptGrid(wrap) {
     grid.style.minHeight = "0px";
 }
 
-function bindPromptWidgetSize(widget) {
+function bindPromptWidgetSize(widget, node) {
     if (!widget) return;
+    const min = () => promptMinHeight(node);
     widget.options ||= {};
-    widget.options.getMinHeight = () => MIN_PROMPT_HEIGHT;
-    widget.options.getHeight = () => "100%";
+    widget.options.getMinHeight = min;
+    widget.options.getHeight = min;
+    widget.options.getMaxHeight = () => 1e6;
     widget.hasLayoutSize = true;
-    delete widget.options.getMaxHeight;
     if (Object.hasOwn(widget, "computeSize")) delete widget.computeSize;
     widget.computeLayoutSize = function () {
-        return { minHeight: MIN_PROMPT_HEIGHT, minWidth: 0 };
+        return { minHeight: min(), maxHeight: 1e6, minWidth: 0 };
     };
 }
 
@@ -494,11 +609,9 @@ function syncPromptWidget(node, widget) {
     const wrap = node.__h3PromptHost || node.__h3EditorWrap;
     if (!dom || !wrap) return;
     pinProgressWidgets(node);
-    bindPromptWidgetSize(dom);
-    const y = Number(dom?.y ?? dom?.last_y);
+    bindPromptWidgetSize(dom, node);
     const fill = remainingPromptHeight(node, dom);
-    const current = Number(dom.computedHeight) || 0;
-    if (Number.isFinite(y) && y > 0 && fill > current) dom.computedHeight = fill;
+    if (Number.isFinite(fill) && fill > 0) dom.computedHeight = fill;
     wrap.style.flex = "1 1 auto";
     wrap.style.width = "100%";
     wrap.style.minHeight = "0px";
@@ -1563,6 +1676,21 @@ function chipItem(item) {
     });
 }
 
+function promptEditors(node) {
+    const host = node.__h3PromptHost;
+    if (host) {
+        const editors = [...host.querySelectorAll(".h3-studio-prompt-editor")];
+        if (editors.length) return editors;
+    }
+    return node.__h3Editor ? [node.__h3Editor] : [];
+}
+
+function persistEditor(node, editor) {
+    const text = serializeEditor(editor);
+    if (typeof editor?.__h3SetValue === "function") editor.__h3SetValue(text);
+    else if (editor === node.__h3Editor) setPromptText(node, text);
+}
+
 function replaceOneChip(node, chip, item, { history = true } = {}) {
     if (!chip?.isConnected) return null;
     const next = chipItem(item);
@@ -1574,21 +1702,24 @@ function replaceOneChip(node, chip, item, { history = true } = {}) {
 }
 
 function replaceChipsByToken(node, token, item, { history = true, keep } = {}) {
-    const editor = node.__h3Editor;
-    if (!editor) return null;
+    const editors = promptEditors(node);
+    if (!editors.length) return null;
     let nextKeep = null;
     const from = parseTag(token);
-    const chips = [...editor.querySelectorAll(".h3-mention-chip")].filter((chip) => {
-        if (!from) return chip.dataset.token === token;
-        return chip.dataset.kind === from.kind && chip.dataset.index === String(from.index);
-    });
-    for (const chip of chips) {
-        const next = chipItem(item);
-        if (keep && chip === keep) nextKeep = next;
-        chip.replaceWith(next);
-        ensureCaretSink(next);
+    for (const editor of editors) {
+        const chips = [...editor.querySelectorAll(".h3-mention-chip")].filter((chip) => {
+            if (!from) return chip.dataset.token === token;
+            return chip.dataset.kind === from.kind && chip.dataset.index === String(from.index);
+        });
+        if (!chips.length) continue;
+        for (const chip of chips) {
+            const next = chipItem(item);
+            if (keep && chip === keep) nextKeep = next;
+            chip.replaceWith(next);
+            ensureCaretSink(next);
+        }
+        persistEditor(node, editor);
     }
-    syncFromEditor(node);
     if (history) pushHistory(node);
     return nextKeep;
 }
@@ -2768,14 +2899,9 @@ function migrateAdvancedPrompt(node) {
         `loop: ${loop ? "true" : "false"}`,
         "",
     ];
-    const first = bodies[0]?.text || "";
-    const subjectMatch = first.match(/subject_definitions:\s*([\s\S]*?)(?=^summary\s*:)/im);
-    if (subjectMatch) {
-        lines.push("subject_definitions:", subjectMatch[1].trim(), "");
-    }
     for (const body of bodies) {
         const role = body.i === 1 ? "Start" : body.i === segments ? "Finish" : "Continue";
-        lines.push(`## Clip ${body.i} — ${role}`, body.text.replace(/^subject_definitions:[\s\S]*?(?=^summary\s*:)/im, "").trim(), "");
+        lines.push(`## Clip ${body.i} — ${role}`, body.text, "");
     }
     if (loop) lines.push("## Loop — return to Clip 1", loop, "");
     prompt.value = lines.join("\n").trim() + "\n";
@@ -2961,6 +3087,68 @@ function placeWidgetBefore(node, name, before) {
     widgets.splice(widgets.indexOf(before), 0, widget);
 }
 
+function orderPromptNodeWidgets(node) {
+    if (!isMusicVideo(node)) return;
+    const before = findWidget(node, "prompt") || node.__h3DomWidget;
+    if (!before) return;
+    placeWidgetBefore(node, "width", before);
+    placeWidgetBefore(node, "height", before);
+}
+
+function applyPromptNodeSize(node, next) {
+    if (!node || !Array.isArray(next) || next.length < 2) return;
+    node.setSize?.(next);
+    if (Array.isArray(node.size)) {
+        node.size[0] = next[0];
+        node.size[1] = next[1];
+    } else {
+        node.size = next;
+    }
+    node.__h3StableSize = next;
+    captureNodeSize(node, next);
+    node._widgetSlotsDirty = true;
+    node.setDirtyCanvas?.(true, true);
+}
+
+function applyDefaultPromptNodeSize(node) {
+    if (!node || node.__h3DefaultSizeApplied) return;
+    node.__h3DefaultSizeApplied = true;
+    const current = Array.isArray(node.size) ? node.size : [];
+    const width = Number(current[0]) > 0 ? Number(current[0]) : DEFAULT_NODE_WIDTH;
+    const fitted = fittingPromptNodeHeight(node);
+    node.__h3FittedHeight = fitted;
+    applyPromptNodeSize(node, [width, fitted]);
+}
+
+function fitPromptNodeHeight(node) {
+    if (!node) return;
+    const fitted = fittingPromptNodeHeight(node);
+    const current = Array.isArray(node.size) ? node.size : [];
+    const width = Number(current[0]) > 0 ? Number(current[0]) : DEFAULT_NODE_WIDTH;
+    const currentH = Number(current[1]) || 0;
+    const prevFitted = node.__h3FittedHeight;
+    const extra = prevFitted == null
+        ? Math.max(0, currentH - fitted)
+        : Math.max(0, currentH - prevFitted);
+    applyPromptNodeSize(node, [width, fitted + extra]);
+    node.__h3FittedHeight = fitted;
+}
+
+function fitPromptNodeHeightSoon(node) {
+    fitPromptNodeHeight(node);
+    requestAnimationFrame?.(() => {
+        fitPromptNodeHeight(node);
+        requestAnimationFrame?.(() => fitPromptNodeHeight(node));
+    });
+}
+
+function finishPromptNodeLayout(node) {
+    orderPromptNodeWidgets(node);
+    applyDefaultPromptNodeSize(node);
+    restoreNodeSizeSoon(node);
+    fitPromptNodeHeightSoon(node);
+}
+
 function isSeamlessLoopOn(node) {
     const value = findWidget(node, "seamless_loop")?.value;
     return value === true || value === "true" || value === 1;
@@ -3106,16 +3294,9 @@ function composeUnifiedFromClipWidgets(node) {
         `loop: ${loop ? "true" : "false"}`,
         "",
     ];
-    const first = bodies[0]?.text || "";
-    const subjectMatch = first.match(/subject_definitions:\s*([\s\S]*?)(?=^summary\s*:)/im);
-    if (subjectMatch) lines.push("subject_definitions:", subjectMatch[1].trim(), "");
     for (const body of bodies) {
         const role = body.i === 1 ? "Start" : body.i === segments ? "Finish" : "Continue";
-        lines.push(
-            `## Clip ${body.i} — ${role}`,
-            body.text.replace(/^subject_definitions:[\s\S]*?(?=^summary\s*:)/im, "").trim(),
-            "",
-        );
+        lines.push(`## Clip ${body.i} — ${role}`, body.text, "");
     }
     if (loop && loopText) lines.push("## Loop — return to Clip 1", loopText, "");
     prompt.value = `${lines.join("\n").trim()}\n`;
@@ -3197,6 +3378,7 @@ function syncAdvancedPromptHost(node) {
     for (const field of fields) mountClipEditorField(node, stack, field);
     node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
+    fitPromptNodeHeightSoon(node);
 }
 
 function switchAdvancedPromptMode(node, mode) {
@@ -3207,7 +3389,6 @@ function switchAdvancedPromptMode(node, mode) {
     setPromptMode(node, next);
     node.__h3PromptHostKey = "";
     syncAdvancedPromptHost(node);
-    restoreNodeSizeSoon(node);
 }
 
 function ensureAdvancedPromptHost(node) {
@@ -3254,8 +3435,8 @@ function ensureAdvancedPromptHost(node) {
         },
         margin: 10,
         serialize: false,
-        getMinHeight: () => 50,
-        getHeight: () => "100%",
+        getMinHeight: () => promptMinHeight(node),
+        getHeight: () => promptMinHeight(node),
         afterResize: () => {
             syncPromptWidget(node, node.__h3DomWidget);
             node._widgetSlotsDirty = true;
@@ -3267,7 +3448,7 @@ function ensureAdvancedPromptHost(node) {
     node.__h3DomWidget = domWidget;
     domWidget.serialize = false;
     setWidgetOption(domWidget, "serialize", false);
-    bindPromptWidgetSize(domWidget);
+    bindPromptWidgetSize(domWidget, node);
     installPromptSizeGuard(node);
     installProgressPin(node);
     const promptIndex = node.widgets?.indexOf(prompt) ?? -1;
@@ -3281,7 +3462,7 @@ function ensureAdvancedPromptHost(node) {
     syncPromptWidget(node, domWidget);
     node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
-    restoreNodeSizeSoon(node);
+    finishPromptNodeLayout(node);
     return domWidget;
 }
 
@@ -3298,7 +3479,7 @@ function installPromptEditor(node) {
             installProgressPin(node);
             syncAdvancedPromptHost(node);
             syncPromptWidget(node, node.__h3DomWidget);
-            restoreNodeSizeSoon(node);
+            finishPromptNodeLayout(node);
             return;
         }
         removePromptEditorWidgets(node);
@@ -3311,7 +3492,7 @@ function installPromptEditor(node) {
         installPromptSizeGuard(node);
         installProgressPin(node);
         syncPromptWidget(node, node.__h3DomWidget);
-        restoreNodeSizeSoon(node);
+        finishPromptNodeLayout(node);
         return;
     }
     migrateAdvancedPrompt(node);
@@ -3328,8 +3509,8 @@ function installPromptEditor(node) {
         },
         margin: 10,
         serialize: false,
-        getMinHeight: () => 50,
-        getHeight: () => "100%",
+        getMinHeight: () => promptMinHeight(node),
+        getHeight: () => promptMinHeight(node),
         afterResize: () => {
             syncPromptWidget(node, node.__h3DomWidget);
             node._widgetSlotsDirty = true;
@@ -3341,7 +3522,7 @@ function installPromptEditor(node) {
     node.__h3DomWidget = domWidget;
     domWidget.serialize = false;
     setWidgetOption(domWidget, "serialize", false);
-    bindPromptWidgetSize(domWidget);
+    bindPromptWidgetSize(domWidget, node);
     installPromptSizeGuard(node);
     installProgressPin(node);
     const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
@@ -3355,7 +3536,7 @@ function installPromptEditor(node) {
     syncPromptWidget(node, domWidget);
     node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
-    restoreNodeSizeSoon(node);
+    finishPromptNodeLayout(node);
 }
 
 app.registerExtension({
@@ -3379,6 +3560,9 @@ app.registerExtension({
         const originalOnConfigure = nodeType.prototype.onConfigure;
         nodeType.prototype.onConfigure = function (info, ...rest) {
             captureNodeSize(this, info?.size);
+            if (Array.isArray(info?.size) && info.size.length >= 2) {
+                this.__h3DefaultSizeApplied = true;
+            }
             const result = originalOnConfigure?.apply(this, [info, ...rest]);
             queueMicrotask(() => {
                 installPromptEditor(this);

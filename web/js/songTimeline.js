@@ -324,6 +324,29 @@ function installTimeline(node, attempt = 0) {
     uploadBtn.options = uploadBtn.options || {};
     uploadBtn.options.serialize = false;
 
+    const alignBtn = node.addWidget("button", "Time lyrics", "align", async () => {
+        app.canvas.node_widget = null;
+        try {
+            const resp = await api.fetchApi("/h3_studio_song/align", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    filename: audioWidget.value,
+                    lyrics: lyricsWidget.value || "",
+                }),
+            });
+            const data = await resp.json();
+            if (!resp.ok) throw new Error(data.error || `${resp.status} ${resp.statusText}`);
+            lyricsWidget.value = data.lyrics;
+            lyricsWidget.callback?.(data.lyrics);
+            loadLyrics();
+        } catch (err) {
+            alert(err);
+        }
+    });
+    alignBtn.options = alignBtn.options || {};
+    alignBtn.options.serialize = false;
+
     const wrap = document.createElement("div");
     wrap.className = "h3song-wrap";
 
@@ -1188,6 +1211,13 @@ function installTimeline(node, attempt = 0) {
             node.setSize([o.size[0], o.size[1]]);
         }
         requestAnimationFrame(() => placeDock(false));
+    });
+
+    chainCallback(node, "onExecuted", function (message) {
+        const next = message?.lyrics?.[0];
+        if (next == null) return;
+        lyricsWidget.value = next;
+        loadLyrics();
     });
 
     loadLyrics();

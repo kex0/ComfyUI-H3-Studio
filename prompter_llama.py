@@ -229,7 +229,7 @@ class LlamaServerSession:
     def base_url(self) -> str:
         return f"http://127.0.0.1:{self.port}"
 
-    def start(self, timeout=SERVER_READY_SEC):
+    def start(self, timeout=SERVER_READY_SEC, progress=None):
         command = [
             self.executable, "-m", self.model_path,
             "--host", "127.0.0.1", "--port", str(self.port),
@@ -243,7 +243,13 @@ class LlamaServerSession:
             creationflags=flags,
         )
         deadline = time.monotonic() + float(timeout)
+        started = time.monotonic()
+        last_status = -2
         while time.monotonic() < deadline:
+            elapsed = int(time.monotonic() - started)
+            if progress is not None and elapsed >= last_status + 2:
+                progress(f"Loading GGUF into llama-server — {elapsed}s")
+                last_status = elapsed
             if self.process.poll() is not None:
                 raise RuntimeError(
                     f"h3_studio: llama-server exited during startup with code {self.process.returncode}"

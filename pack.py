@@ -215,6 +215,12 @@ def require_pack(pack) -> dict:
         out["duration"] = float(pack["duration"])
     if pack.get("segments") is not None:
         out["segments"] = int(pack["segments"])
+    out["plan"] = str(pack.get("plan") or "").strip()
+    if pack.get("loop") is not None:
+        out["loop"] = bool(pack.get("loop"))
+    if pack.get("song") is not None:
+        out["song"] = pack["song"]
+    out["lyrics"] = str(pack.get("lyrics") or "").strip()
     return out
 
 
@@ -307,8 +313,15 @@ def pack_first_frame(pack):
     return None
 
 
-def format_builder_dump(models, pictures, videos, audios, plan="") -> str:
+def format_builder_dump(models, pictures, videos, audios, plan="", duration=None,
+                        segments=None, loop=False) -> str:
     lines = ["H3 Studio Builder pack"]
+    if duration is not None:
+        lines.append(f"duration: {float(duration):.2f}s")
+    if segments is not None:
+        lines.append(f"segments: {int(segments)}")
+    if loop:
+        lines.append("loop: true")
     for item in models:
         desc = str(item.get("description") or "").strip() or "(no description)"
         lines.append(f"Model {int(item['index'])}: {desc}")
