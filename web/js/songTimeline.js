@@ -311,6 +311,7 @@ function installTimeline(node, attempt = 0) {
                 audioWidget.options.values.push(name);
             }
             audioWidget.value = name;
+            if (audioWidget._state) audioWidget._state.value = name;
             audioWidget.callback?.(name);
         } catch (err) {
             alert(err);
@@ -1148,6 +1149,18 @@ function installTimeline(node, attempt = 0) {
     });
     canvas.addEventListener("pointerup", () => { state.drag = null; });
 
+    function audioFilename() {
+        const raw = audioWidget?._state?.value ?? audioWidget?.value;
+        return String(raw ?? "").trim();
+    }
+
+    function syncFromWidgets() {
+        loadLyrics();
+        loadLoop();
+        const name = audioFilename();
+        if (name) setAudioFile(name);
+    }
+
     chainCallback(audioWidget, "callback", function (value) { setAudioFile(value); });
     chainCallback(lyricsWidget, "callback", () => loadLyrics());
     chainCallback(loopWidget, "callback", () => loadLoop(true));
@@ -1163,6 +1176,7 @@ function installTimeline(node, attempt = 0) {
                 audioWidget.options.values.push(name);
             }
             audioWidget.value = name;
+            if (audioWidget._state) audioWidget._state.value = name;
             audioWidget.callback?.(name);
             return true;
         } catch (err) {
@@ -1210,7 +1224,12 @@ function installTimeline(node, attempt = 0) {
         if (node._h3DockGeomRestored && o && Array.isArray(o.size) && o.size.length === 2) {
             node.setSize([o.size[0], o.size[1]]);
         }
-        requestAnimationFrame(() => placeDock(false));
+        // widgets_values are applied before callbacks; reload the dock from the restored combo
+        syncFromWidgets();
+        requestAnimationFrame(() => {
+            syncFromWidgets();
+            placeDock(false);
+        });
     });
 
     chainCallback(node, "onExecuted", function (message) {
@@ -1220,20 +1239,22 @@ function installTimeline(node, attempt = 0) {
         loadLyrics();
     });
 
-    loadLyrics();
-    loadLoop();
-    if (audioWidget.value) setAudioFile(audioWidget.value);
+    // Fresh nodes only — graph loads sync in onConfigure after widgets_values restore.
+    if (!node._h3Configured) syncFromWidgets();
     setTimeout(() => {
-        if (!node._h3Configured) {
-            if (node.size[0] < 360) node.setSize([360, node.size[1]]);
-            placeDock(true);
-        } else if (!node._h3DockGeomRestored) {
-            const fitted = node.computeSize();
-            if (node.size[1] > fitted[1] + 80) node.setSize([Math.max(node.size[0], 360), fitted[1]]);
-            placeDock(true);
-        } else {
-            placeDock(false);
+        if (node._h3Configured) {
+            syncFromWidgets();
+            if (!node._h3DockGeomRestored) {
+                const fitted = node.computeSize();
+                if (node.size[1] > fitted[1] + 80) node.setSize([Math.max(node.size[0], 360), fitted[1]]);
+                placeDock(true);
+            } else {
+                placeDock(false);
+            }
+            return;
         }
+        if (node.size[0] < 360) node.setSize([360, node.size[1]]);
+        placeDock(true);
     }, 0);
 }
 

@@ -101,6 +101,10 @@ def test_load_song_align_wiring():
     assert 'node.addWidget("button", "Time lyrics"' in js
     assert 'api.fetchApi("/h3_studio_song/align"' in js
     assert 'chainCallback(node, "onExecuted"' in js
+    assert "function syncFromWidgets()" in js
+    assert "function audioFilename()" in js
+    assert "syncFromWidgets();" in js
+    assert 'chainCallback(node, "onConfigure"' in js
 
 
 def test_apply_line_refine_keeps_confirm_stamps():
