@@ -11,6 +11,7 @@ from .clip_fix_chain import (
     require_fix_slots, resolve_regen_clips, should_regen_loop,
 )
 from .music_video import H3StudioMusicVideo
+from .node_help import NODE_HELP
 
 CLIP_INDEX_SPEC = ("STRING", {
     "default": "",
@@ -105,11 +106,7 @@ class H3StudioMusicVideoClipFixer(H3StudioMusicVideo):
             drop=("resume_from_clip", "stop_after_clip", "duration", "segments", "seamless_loop"),
         )
 
-    DESCRIPTION = (
-        "Regenerate selected Music Video clips under latent_prefix and restitch the full chain. "
-        "Continue clips use the previous latent and, when the following slot is kept, that next "
-        "opening as end context. Lyrics/song windows stay on the saved slot metadata."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioMusicVideoClipFixer"]
 
     def generate(self, pack, clip_index="", **kwargs):
         from .pack import require_pack
@@ -132,11 +129,7 @@ class H3StudioAutoChainClipFixer(H3StudioAutoChain):
             drop=("resume_from_clip", "duration", "segments", "seamless_loop"),
         )
 
-    DESCRIPTION = (
-        "Regenerate selected Auto Chain clips under latent_prefix and restitch the full chain. "
-        "Continue clips sandwich previous + next latents when the next slot is not rewritten. "
-        "If Finish is selected and a Loop clip exists, the Loop clip is regenerated too."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioAutoChainClipFixer"]
 
     def generate(self, pack, prompt_mode="single", clip_index="", **kwargs):
         from .pack import require_pack

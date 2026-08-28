@@ -65,7 +65,11 @@ Point Face Refine `video_path` at the `png …` folder from `chain_info` (ComfyU
 
 ## Lyrics Timer
 
-Times untimed lyrics with torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Use **Time lyrics** or queue Lyrics Timer **without H3 loaded**; the first run downloads that bundle. Confirm-format `[start-end]` LRC is passed through so timeline edits stick. Local Prompter then letter-refines those locked lines and fills the Music Video prompt. Parakeet / WhisperX stay out of Comfy’s venv.
+Times untimed lyrics with torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Use **Time lyrics** or queue Lyrics Timer **without H3 loaded**; the first run downloads that bundle. Confirm-format `[start-end]` LRC is passed through so timeline edits stick. Local Prompter then letter-refines those locked lines and fills the Music Video prompt. The **music-video agent skill** posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton). Parakeet / WhisperX stay out of Comfy’s venv.
+
+## Agent skills
+
+Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claude Code, and similar). Music Video **Copy skill command** includes the Comfy origin, song path, and timed lyrics. The music-video skill does not download torch; it reuses this Comfy install.
 
 ## License
 

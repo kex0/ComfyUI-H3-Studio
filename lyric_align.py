@@ -300,39 +300,45 @@ def align_plain_lyrics(audio_path, lines, waveform=None, sample_rate=None) -> li
         _release_aligner()
 
 
+def _char_clock(sp, frame_seconds: float) -> tuple[float, float]:
+    t0 = float(int(sp.start)) * frame_seconds
+    t1 = float(int(sp.end)) * frame_seconds
+    if t1 <= t0:
+        t1 = t0 + frame_seconds
+    return t0, t1
+
+
+def _flush_word(letters, char_clocks, frame_seconds: float) -> dict:
+    t0 = float(char_clocks[0]["start"])
+    t1 = float(char_clocks[-1]["end"])
+    word = {
+        "start": t0,
+        "end": t1 if t1 > t0 else t0 + frame_seconds,
+        "text": "".join(letters),
+        "chars": char_clocks,
+    }
+    return word
+
+
 def _spans_to_words(spans, labels, frame_seconds: float) -> list[dict]:
     words = []
-    chars = []
-    start = None
-    end = None
+    letters = []
+    char_clocks = []
     for sp in spans or []:
         tok = labels[int(sp.token)]
         if tok == "|":
-            if chars:
-                t0 = float(start) * frame_seconds
-                t1 = float(end) * frame_seconds
-                words.append({
-                    "start": t0,
-                    "end": t1 if t1 > t0 else t0 + frame_seconds,
-                    "text": "".join(chars),
-                })
-                chars = []
-                start = None
+            if letters:
+                words.append(_flush_word(letters, char_clocks, frame_seconds))
+                letters = []
+                char_clocks = []
             continue
         if tok == "-":
             continue
-        if start is None:
-            start = int(sp.start)
-        end = int(sp.end)
-        chars.append(tok)
-    if chars:
-        t0 = float(start) * frame_seconds
-        t1 = float(end) * frame_seconds
-        words.append({
-            "start": t0,
-            "end": t1 if t1 > t0 else t0 + frame_seconds,
-            "text": "".join(chars),
-        })
+        c0, c1 = _char_clock(sp, frame_seconds)
+        letters.append(tok)
+        char_clocks.append({"char": tok, "start": c0, "end": c1})
+    if letters:
+        words.append(_flush_word(letters, char_clocks, frame_seconds))
     if not words:
         raise ValueError("h3_studio: lyric align produced no word clocks")
     return words

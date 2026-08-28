@@ -21,6 +21,7 @@ from .chain_inputs import (
 )
 from .latent_math import FPS, temporal_shape
 from .music_video_prompt import parse_music_video_prompt, validate_music_video_prompt
+from .node_help import NODE_HELP
 from .release_utils import duration_to_requested_frames
 from .seamless_stitch import fit_audio_length, resolve_saved_head_context, safe_tail_bridge_plan
 from .song_math import (
@@ -340,12 +341,7 @@ class H3StudioMusicVideo:
     FUNCTION = "generate"
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Music Video with a Builder pack: per-clip model and extra Ref2VA refs from prompt tags. "
-        "Single-prompt mode reads clip count and max duration from the prompt, or duration from "
-        "the Builder pack. One-prompt-per-clip mode shows duration and segments widgets. "
-        "The generate-length song slice stays <Audio 1>. Song comes from the Builder pack."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioMusicVideo"]
 
     def generate(self, pack, prompt_mode="single", **kwargs):
         from .pack import require_pack

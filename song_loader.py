@@ -4,14 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 
 import av
 import folder_paths
 import torch
 
-from .lyric_align import resolve_timed_lyrics
-from .lyric_timing import split_plain_lyric_lines
+from .lyric_align import refine_confirm_lyrics, resolve_timed_lyrics
+from .lyric_timing import (
+    assign_lyrics_to_windows, dump_aligned_lyrics, format_lrc,
+    format_music_video_skeleton, parse_timestamped_lyrics, split_plain_lyric_lines,
+)
+from .node_help import NODE_HELP
 
 AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
@@ -81,6 +86,7 @@ class H3StudioLoadSong:
     RETURN_NAMES = ("song", "lyrics")
     FUNCTION = "load_song"
     CATEGORY = "H3 Studio"
+    DESCRIPTION = NODE_HELP["H3StudioLoadSong"]
 
     def load_song(self, audio, lyrics="", **_kwargs):
         path = folder_paths.get_annotated_filepath(audio)
@@ -108,6 +114,63 @@ class H3StudioLoadSong:
         return True
 
 
+def resolve_song_file_path(filename="", path=""):
+    """Resolve a Comfy input audio name (or dump path) to an existing file."""
+    seen = []
+    for raw in (filename, path):
+        text = str(raw or "").strip()
+        if not text or text in seen:
+            continue
+        seen.append(text)
+        candidates = [text]
+        base = os.path.basename(text.replace("\\", "/"))
+        if base and base not in candidates:
+            candidates.append(base)
+        for cand in candidates:
+            if not folder_paths.exists_annotated_filepath(cand):
+                continue
+            resolved = folder_paths.get_annotated_filepath(cand)
+            if os.path.isfile(resolved):
+                return resolved
+    return ""
+
+
+def _song_path_from_request(body=None, filename=""):
+    payload = body or {}
+    return resolve_song_file_path(
+        filename or payload.get("filename") or "",
+        payload.get("path") or "",
+    )
+
+
+def _plan_duration(raw) -> float:
+    text = str(raw if raw is not None else 10).strip().rstrip("sS")
+    return float(text or 10)
+
+
+def plan_music_video(path, lyrics, duration=10.0) -> dict:
+    """Letter-refine confirm LRC and emit CLIP skeleton for the agent skill."""
+    if not parse_timestamped_lyrics(lyrics):
+        raise ValueError("h3_studio: lyrics need [start-end] stamps before plan")
+    loaded = load_song_audio(path)
+    song_seconds = float(loaded["waveform"].shape[-1]) / float(loaded["sample_rate"])
+    max_seconds = _plan_duration(duration)
+    refined = refine_confirm_lyrics(
+        loaded["waveform"], loaded["sample_rate"], lyrics, song_seconds=song_seconds,
+    )
+    windows = assign_lyrics_to_windows(refined, song_seconds, max_seconds)
+    words = json.loads(dump_aligned_lyrics(
+        refined, song_seconds=song_seconds, source="wav2vec2-refine",
+    ))
+    return {
+        "song_seconds": song_seconds,
+        "source": "wav2vec2-refine",
+        "lyrics": format_lrc(refined),
+        "words": words,
+        "skeleton": format_music_video_skeleton(windows, max_seconds),
+    }
+
+
 def register_song_routes():
     try:
         from aiohttp import web
@@ -119,14 +182,21 @@ def register_song_routes():
         return
     instance._h3_studio_song_routes = True
 
+    @instance.routes.get("/h3_studio_song/path")
+    async def h3_studio_song_path(request):
+        filename = str(request.query.get("filename") or "").strip()
+        path = resolve_song_file_path(filename)
+        if not path:
+            return web.json_response({"error": f"Invalid audio file: {filename}"}, status=400)
+        return web.json_response({"path": path, "filename": os.path.basename(path)})
+
     @instance.routes.post("/h3_studio_song/align")
     async def h3_studio_song_align(request):
         body = await request.json()
-        filename = str(body.get("filename") or "").strip()
         lyrics = str(body.get("lyrics") or "")
-        if not folder_paths.exists_annotated_filepath(filename):
-            return web.json_response({"error": f"Invalid audio file: {filename}"}, status=400)
-        path = folder_paths.get_annotated_filepath(filename)
+        path = _song_path_from_request(body)
+        if not path:
+            return web.json_response({"error": "Invalid audio file"}, status=400)
         try:
             timed = await asyncio.get_running_loop().run_in_executor(
                 None, resolve_timed_lyrics, path, lyrics,
@@ -134,6 +204,53 @@ def register_song_routes():
         except Exception as exc:
             return web.json_response({"error": str(exc)}, status=400)
         return web.json_response({"lyrics": timed})
+
+    def _refine_confirm(path, lyrics):
+        loaded = load_song_audio(path)
+        refined = refine_confirm_lyrics(
+            loaded["waveform"], loaded["sample_rate"], lyrics,
+        )
+        return format_lrc(refined)
+
+    @instance.routes.post("/h3_studio_song/refine")
+    async def h3_studio_song_refine(request):
+        body = await request.json()
+        lyrics = str(body.get("lyrics") or "")
+        path = _song_path_from_request(body)
+        if not path:
+            return web.json_response({"error": "Invalid audio file"}, status=400)
+        if not parse_timestamped_lyrics(lyrics):
+            return web.json_response(
+                {"error": "h3_studio: lyrics need [start-end] stamps before refine"},
+                status=400,
+            )
+        try:
+            timed = await asyncio.get_running_loop().run_in_executor(
+                None, _refine_confirm, path, lyrics,
+            )
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response({"lyrics": timed})
+
+    @instance.routes.post("/h3_studio_song/plan")
+    async def h3_studio_song_plan(request):
+        body = await request.json()
+        lyrics = str(body.get("lyrics") or "")
+        path = _song_path_from_request(body)
+        if not path:
+            return web.json_response({"error": "Invalid audio file"}, status=400)
+        if not parse_timestamped_lyrics(lyrics):
+            return web.json_response(
+                {"error": "h3_studio: lyrics need [start-end] stamps before plan"},
+                status=400,
+            )
+        try:
+            planned = await asyncio.get_running_loop().run_in_executor(
+                None, plan_music_video, path, lyrics, body.get("duration"),
+            )
+        except Exception as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        return web.json_response(planned)
 
 
 register_song_routes()

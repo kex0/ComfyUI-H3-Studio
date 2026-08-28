@@ -27,8 +27,8 @@ const MIN_PLAN_PX = 88;
 const MODE_AUTO_CHAIN = "auto_chain";
 const MODE_MUSIC_VIDEO = "music_video";
 const MUSIC_VIDEO_SONG_TIP = "Music Video uses the Builder song (drop a file or wire Lyrics Timer). Builder audio refs are unused.";
-const COPY_PACK_LABEL = "Copy pack summary";
-const COPY_PACK_TIP = "Copies duration, segments, loop, enabled labels, and the plan field.";
+const COPY_SKILL_LABEL = "Copy skill command";
+const COPY_SKILL_TIP = "Copies /prompt-minimax-h3-infinite or /prompt-minimax-h3-music-video plus duration, inventory, and plan. Music Video also copies the Comfy origin, song path, and lyrics.";
 const MIN_REGION_SEC = 2;
 const MIN_DURATION_SEC = 5;
 const MAX_DURATION_SEC = 15;
@@ -832,7 +832,7 @@ function syncModeSlots(node) {
 }
 
 function defaultState() {
-    return { media: [], models: [], include_skill: false, plan: "" };
+    return { media: [], models: [], plan: "" };
 }
 
 function parseState(raw) {
@@ -842,7 +842,6 @@ function parseState(raw) {
         return {
             media: Array.isArray(data.media) ? data.media : [],
             models: Array.isArray(data.models) ? data.models : [],
-            include_skill: Boolean(data.include_skill),
             plan: String(data.plan || ""),
         };
     } catch (_) {
@@ -855,15 +854,50 @@ function fileName(path) {
     return text.split("/").pop() || text;
 }
 
+function linkedOrigin(node, inputName) {
+    const input = findInput(node, inputName);
+    const linkId = input?.link;
+    if (linkId == null || linkId === -1) return null;
+    const links = node.graph?.links ?? node.graph?._links;
+    const link = typeof links?.get === "function" ? links.get(linkId) : links?.[linkId];
+    if (!link) return null;
+    return node.graph?.getNodeById?.(link.origin_id) || null;
+}
+
+function builderSongFilename(node) {
+    if (songSocketLinked(node)) {
+        const wired = String(findWidget(linkedOrigin(node, "song"), "audio")?.value || "").trim();
+        if (wired) return wired;
+    }
+    return String(findWidget(node, "song_file")?.value || "").trim();
+}
+
+function builderLyricsText(node) {
+    if (lyricsSocketLinked(node)) {
+        const wired = String(findWidget(linkedOrigin(node, "lyrics"), "lyrics")?.value || "").trim();
+        if (wired) return wired;
+    }
+    return String(findWidget(node, "lyrics")?.value || "").trim();
+}
+
+async function resolveSongPath(node) {
+    const filename = builderSongFilename(node);
+    if (!filename) return "";
+    try {
+        const resp = await api.fetchApi("/h3_studio_song/path?" + new URLSearchParams({ filename }));
+        const data = await resp.json();
+        if (resp.ok && data.path) return String(data.path);
+    } catch (_) {}
+    return filename;
+}
+
 function skillSlash(node) {
     return isMusicVideoMode(node) ? "/prompt-minimax-h3-music-video" : "/prompt-minimax-h3-infinite";
 }
 
-function formatDump(node, state, slots) {
+async function formatDump(node, state, slots) {
     const music = isMusicVideoMode(node);
-    const lines = [];
-    if (state?.include_skill) lines.push(skillSlash(node));
-    lines.push("H3 Studio Builder pack");
+    const lines = [skillSlash(node), "H3 Studio Builder pack"];
     lines.push(`duration: ${builderDuration(node).toFixed(2)}s`);
     if (!music) {
         lines.push(`segments: ${builderSegments(node)}`);
@@ -896,6 +930,17 @@ function formatDump(node, state, slots) {
         } else if (item.kind === "audio") {
             aud += 1;
             lines.push(`Audio ${aud}: ${dur.toFixed(1)}s ${desc}`);
+        }
+    }
+    if (music) {
+        const origin = String(window.location?.origin || "").replace(/\/$/, "");
+        if (origin) lines.push(`comfy: ${origin}`);
+        const songPath = await resolveSongPath(node);
+        const lyrics = builderLyricsText(node);
+        if (songPath) lines.push(`song: ${songPath}`);
+        if (lyrics) {
+            lines.push("lyrics:");
+            lines.push(lyrics);
         }
     }
     const plan = String(state?.plan || "").trim();
@@ -1871,7 +1916,7 @@ function attachPlanEditor(node) {
         },
         inventoryNode: node,
         label: "plan",
-        placeholder: "Story / visual plan. Copied into the pack summary for the prompt skills.",
+        placeholder: "Story / visual plan. Copied with Copy skill command.",
     });
 }
 
@@ -2058,19 +2103,6 @@ function ensureUi(node) {
 }
 .h3-builder-actions { display: flex; gap: 6px; flex-wrap: wrap; flex: 0 0 auto; align-items: center; }
 .h3-builder-actions button { background: #333; color: #eee; border: 1px solid #555; padding: 4px 8px; cursor: pointer; }
-.h3-builder-switch {
-  display: inline-flex; align-items: center; gap: 6px; color: #ccc; cursor: pointer; user-select: none;
-}
-.h3-builder-switch input {
-  appearance: none; -webkit-appearance: none; width: 28px; height: 16px; margin: 0;
-  border-radius: 999px; background: #3a3a3a; border: 1px solid #666; position: relative; cursor: pointer;
-}
-.h3-builder-switch input::after {
-  content: ""; position: absolute; top: 1px; left: 1px; width: 12px; height: 12px;
-  border-radius: 50%; background: #ddd;
-}
-.h3-builder-switch input:checked { background: #3d6a93; border-color: #7ec8ff; }
-.h3-builder-switch input:checked::after { left: 13px; }
 .h3-builder button.h3-builder-copied { border-color: #6c9; color: #cfe; background: #2a4033; }
 .h3-builder-hint { color: #888; flex: 0 0 auto; }
 .h3-builder-footer { display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; }
@@ -2128,11 +2160,7 @@ function ensureUi(node) {
 <div class="h3-builder-hint">Drop image / video / audio here, or wire them to Media. Drag a thumbnail or handle to reorder. Right-click a reference for details.</div>
 <div class="h3-builder-actions">
   <button type="button" data-act="upload">Upload</button>
-  <button type="button" data-act="copy" title="${COPY_PACK_TIP}">${COPY_PACK_LABEL}</button>
-  <label class="h3-builder-switch" title="When on, the copy starts with /prompt-minimax-h3-infinite or /prompt-minimax-h3-music-video for the selected mode.">
-    <input type="checkbox" data-act="skill-slash">
-    <span>Skill slash</span>
-  </label>
+  <button type="button" data-act="copy" title="${COPY_SKILL_TIP}">${COPY_SKILL_LABEL}</button>
 </div>
 </div>
 <input type="file" multiple accept="image/*,video/*,audio/*" hidden />
@@ -2233,8 +2261,6 @@ function ensureUi(node) {
                 ? "Drop a song on the song row. Drop image / video / audio on the list, or wire them to Media. Audio refs are unused in Music Video mode."
                 : "Drop image / video / audio here, or wire them to Media. Drag a thumbnail or handle to reorder. Right-click a reference for details.";
         }
-        const skillToggle = root.querySelector("[data-act=skill-slash]");
-        if (skillToggle) skillToggle.checked = Boolean(ui.state.include_skill);
         list.scrollTop = scrollTop;
     }
 
@@ -2277,22 +2303,18 @@ function ensureUi(node) {
         if (files.length && takeFileDrop(node)) void addFiles(files);
     });
     root.querySelector("[data-act=upload]").addEventListener("click", () => fileInput.click());
-    root.querySelector("[data-act=skill-slash]")?.addEventListener("change", (event) => {
-        ui.state.include_skill = Boolean(event.target.checked);
-        persist(node, ui.state);
-    });
     copyBtn.addEventListener("click", async () => {
-        const dump = formatDump(node, ui.state, connectedModelSlots(node));
+        const dump = await formatDump(node, ui.state, connectedModelSlots(node));
         try {
             await navigator.clipboard.writeText(dump);
         } catch (_) {
-            window.prompt("Copy Builder dump", dump);
+            window.prompt("Copy skill command", dump);
         }
         copyBtn.textContent = "Copied";
         copyBtn.classList.add("h3-builder-copied");
         clearTimeout(copyBtn._h3Copied);
         copyBtn._h3Copied = setTimeout(() => {
-            copyBtn.textContent = COPY_PACK_LABEL;
+            copyBtn.textContent = COPY_SKILL_LABEL;
             copyBtn.classList.remove("h3-builder-copied");
         }, 1500);
     });

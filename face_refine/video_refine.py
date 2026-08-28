@@ -44,6 +44,7 @@ from .nodes import (
     _affine_crop, _detector_list, _load_detector, _to_bgr_u8,
     crop_transform_frames,
 )
+from ..node_help import NODE_HELP
 
 _LOG = logging.getLogger("h3_facerefine")
 FPS = 24
@@ -1242,17 +1243,7 @@ class H3StudioFaceRefineVideo:
     FUNCTION = "run"
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Refine small faces across a full H3 video. H3 inpaints the entire face "
-        "inside each crop; crop background and audio stay frozen. Close-ups are left alone. "
-        "A face must stay visible for at least 0.5s with no gap before it is sampled. "
-        "For a finished music video set video_path to the PNG folder from Music Video. "
-        "Tracked once, then packed into H3 windows no longer than chunk_duration. "
-        "Saves each pass so you can resume or stop. "
-        "save_images_to_disk (off by default) writes PNGs and returns that sequence; "
-        "off keeps IMAGE in RAM and errors if it will not fit. "
-        "No lyrics in the prompt."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioFaceRefineVideo"]
 
     def run(self, model, clip, vae, audio_vae, sampler, sigmas, noise, prompt,
             detector, chunk_duration, skip_closeup_frac, confidence, crop_factor,

@@ -14,6 +14,7 @@ from PIL import Image, ImageOps
 import folder_paths
 
 from .chain_inputs import MAX_SEGMENTS
+from .node_help import NODE_HELP
 from .pack import (
     MAX_MODELS, MAX_MIXED, MIN_CLIP_SEC, MAX_CLIP_SEC, assert_ref_caps,
 )
@@ -734,12 +735,7 @@ class H3StudioBuilder:
     )
     FUNCTION = "build_pack"
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Drop images, videos, and audio, wire extra media to Media, connect patched H3 models, "
-        "then output a pack for Auto Chain or Music Video. "
-        "Music Video mode disables audio refs and shows song plus lyrics. "
-        "Plan, max clip duration, clip count, loop, song, and lyrics travel with the pack."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioBuilder"]
 
     def build_pack(self, model_1, mode=MODE_AUTO_CHAIN, max_clip_duration=DEFAULT_DURATION,
                   segments=DEFAULT_SEGMENTS, loop=False, song_file="", lyrics="",

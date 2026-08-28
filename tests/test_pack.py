@@ -444,13 +444,22 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "skip_audio" in builder
     assert '"display": "number"' in builder
     assert "/h3_studio_builder/file" in builder
-    assert "Copy pack summary" in builder_js
-    assert "COPY_PACK_TIP" in builder_js
+    assert "Copy skill command" in builder_js
+    assert "COPY_SKILL_TIP" in builder_js
+    assert "Copy pack summary" not in builder_js
     assert "copy-info" not in builder_js
-    assert "include_skill" in builder_js
+    assert "include_skill" not in builder_js
+    assert "h3-builder-switch" not in builder_js
     assert "/prompt-minimax-h3-infinite" in builder_js
     assert "/prompt-minimax-h3-music-video" in builder_js
     assert "skillSlash" in builder_js
+    assert "/h3_studio_song/path" in builder_js
+    assert "lines.push(\"lyrics:\")" in builder_js
+    assert "lines.push(`song: ${songPath}`)" in builder_js
+    assert "lines.push(`comfy: ${origin}`)" in builder_js
+    assert "window.location?.origin" in builder_js
+    assert "function lyricsSocketLinked" in builder_js
+    assert builder_js.count("function lyricsSocketLinked") == 1
     assert "H3StudioBuilder" in builder_js
     assert "model_${i}" in builder_js
     assert "getMinHeight" in builder_js
@@ -641,3 +650,11 @@ def test_builder_media_socket():
     image = torch.zeros(1, 8, 8, 3)
     cropped = ns["crop_image_tensor"](image, {"x": 0.25, "y": 0.25, "w": 0.5, "h": 0.5})
     assert tuple(cropped.shape) == (1, 4, 4, 3)
+
+
+def test_plan_music_video_rejects_untimed():
+    loader = _load("song_loader")
+    with pytest.raises(ValueError, match="stamps"):
+        loader.plan_music_video("unused.wav", "hello world")
+    assert loader._plan_duration("10.00s") == 10.0
+    assert loader._plan_duration(8) == 8.0

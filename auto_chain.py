@@ -17,6 +17,7 @@ from .chain_inputs import (
     collect_segment_models, segment_prompt_specs,
 )
 from .latent_math import CONTEXT_TO_STEPS, FPS, loop_wrap_start_frames, pixel_frames
+from .node_help import NODE_HELP
 from .spectrum_join import attach_spectrum_join_prefix
 
 PNG_PREFIX = "video/h3_auto_chain"
@@ -347,12 +348,7 @@ class H3StudioAutoChain:
     FUNCTION = "generate"
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Auto Chain with a Builder pack: per-clip model and Ref2VA image/video/audio refs from "
-        "prompt tags. Single-prompt mode reads duration, clip count, and loop from the prompt "
-        "(or duration/clip count from the Builder pack). One-prompt-per-clip mode shows those "
-        "widgets again. Wire Builder → pack."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioAutoChain"]
 
     def generate(self, pack, prompt_mode="single", **kwargs):
         from .pack import require_pack

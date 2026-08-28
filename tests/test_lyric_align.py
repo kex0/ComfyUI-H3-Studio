@@ -6,7 +6,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lyric_align import apply_line_refine, lines_from_aligned_words, refine_confirm_lyrics, resolve_timed_lyrics
+from types import SimpleNamespace
+
+from lyric_align import (
+    _spans_to_words, apply_line_refine, lines_from_aligned_words,
+    refine_confirm_lyrics, resolve_timed_lyrics,
+)
 from lyric_timing import format_lrc
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -97,6 +102,15 @@ def test_load_song_align_wiring():
     assert "resolve_timed_lyrics" in loader
     assert 'return "h3_studio: lyrics are required"' in loader
     assert "/h3_studio_song/align" in loader
+    assert "/h3_studio_song/path" in loader
+    assert "/h3_studio_song/refine" in loader
+    assert "/h3_studio_song/plan" in loader
+    assert "def plan_music_video" in loader
+    assert "format_music_video_skeleton" in loader
+    assert "dump_aligned_lyrics" in loader
+    assert "return web.json_response(planned)" in loader
+    assert "def resolve_song_file_path" in loader
+    assert "refine_confirm_lyrics" in loader
     assert '{"ui": {"lyrics": [timed]}, "result": (loaded, timed)}' in loader
     assert '"loop": ("STRING"' not in loader
     assert "h3song-action-upload" in js
@@ -127,7 +141,13 @@ def test_load_song_align_wiring():
 def test_apply_line_refine_keeps_confirm_stamps():
     line = {"start": 1.0, "end": 3.0, "text": "hello world"}
     words = [
-        {"start": 1.1, "end": 1.5, "text": "hello"},
+        {
+            "start": 1.1, "end": 1.5, "text": "hello",
+            "chars": [
+                {"char": "H", "start": 1.1, "end": 1.3},
+                {"char": "E", "start": 1.3, "end": 1.5},
+            ],
+        },
         {"start": 1.5, "end": 2.0, "text": "world"},
     ]
     out = apply_line_refine(line, words, 10.0)
@@ -135,6 +155,7 @@ def test_apply_line_refine_keeps_confirm_stamps():
     assert out["end"] == 3.0
     assert out["text"] == "hello world"
     assert [w["text"] for w in out["words"]] == ["hello", "world"]
+    assert [c["char"] for c in out["words"][0]["chars"]] == ["H", "E"]
 
 
 def test_apply_line_refine_even_splits_when_align_fails():
@@ -151,3 +172,33 @@ def test_apply_line_refine_even_splits_when_align_fails():
 def test_refine_confirm_lyrics_rejects_untimed():
     with pytest.raises(ValueError, match="time lyrics"):
         refine_confirm_lyrics(None, 16000, "hello world\nsecond line")
+
+
+def test_spans_to_words_emits_char_clocks():
+    labels = ("-", "|", "H", "I")
+    spans = [
+        SimpleNamespace(token=2, start=0, end=4),
+        SimpleNamespace(token=3, start=4, end=8),
+        SimpleNamespace(token=1, start=8, end=9),
+        SimpleNamespace(token=2, start=10, end=12),
+        SimpleNamespace(token=3, start=12, end=16),
+    ]
+    words = _spans_to_words(spans, labels, 0.02)
+    assert [w["text"] for w in words] == ["HI", "HI"]
+    assert words[0]["start"] == 0.0
+    assert words[0]["end"] == pytest.approx(0.16)
+    assert [c["char"] for c in words[0]["chars"]] == ["H", "I"]
+    assert words[0]["chars"][0]["char"] == "H"
+    assert words[0]["chars"][0]["start"] == 0.0
+    assert words[0]["chars"][0]["end"] == pytest.approx(0.08)
+    assert words[0]["chars"][1]["char"] == "I"
+    assert words[0]["chars"][1]["start"] == pytest.approx(0.08)
+    assert words[0]["chars"][1]["end"] == pytest.approx(0.16)
+    assert [c["char"] for c in words[1]["chars"]] == ["H", "I"]
+    assert words[1]["start"] == pytest.approx(0.20)
+    assert words[1]["end"] == pytest.approx(0.32)
+
+
+def test_spans_to_words_rejects_empty():
+    with pytest.raises(ValueError, match="no word clocks"):
+        _spans_to_words([], ("-", "|", "A"), 0.02)

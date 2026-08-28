@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from .node_help import NODE_HELP
 from .pack import require_pack
 from .prompt_document import parse_prompt_document, story_clips
 
@@ -158,10 +159,7 @@ class H3StudioClipPromptFixer:
     )
     FUNCTION = "attach_fix"
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Stash a seed prompt, selected clip indices, and a fix plan onto a Builder pack "
-        "so Local Prompter rewrites only those clip bodies."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioClipPromptFixer"]
 
     def attach_fix(self, pack, original_prompt, clip_index="", plan=""):
         pack = dict(require_pack(pack))

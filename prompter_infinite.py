@@ -14,6 +14,7 @@ from .lyric_timing import (
     assign_lyrics_to_windows, format_window_lyrics, is_instrumental_marker,
     parse_timestamped_lyrics, sung_prompt_text,
 )
+from .node_help import NODE_HELP
 from .pack import format_builder_dump, parse_prompt_citations, require_pack
 from .prompt_document import (
     assemble_auto_chain_document, assemble_music_video_document, clip_body,
@@ -715,11 +716,7 @@ class H3StudioLocalInfinitePrompter:
     )
     FUNCTION = "generate_prompts"
     CATEGORY = "H3 Studio"
-    DESCRIPTION = (
-        "Start local llama.cpp on a catalog or local GGUF, write Auto Chain or Music Video "
-        "Ref2VA prompts from a Builder pack, then stop the server. Queue without H3 loaded. "
-        "27B Q4_K_M and H3 cannot share 32 GB VRAM."
-    )
+    DESCRIPTION = NODE_HELP["H3StudioLocalInfinitePrompter"]
 
     @classmethod
     def IS_CHANGED(cls, pack=None, model=CATALOG_LABEL, allow_download=False, n_ctx=16384,
