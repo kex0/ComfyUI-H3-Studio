@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import subprocess
+import wave
 
 import numpy as np
 import torch
@@ -36,7 +37,7 @@ from .grid import (
     chunk_is_all_closeup, chunk_ranges, committed_file_spans, committed_write_span,
     debug_file_slice, denoise_px_range, face_ellipse_mask, face_token_video_mask,
     h3_latent_t, h3_steps_covering, hard_cut_breaks, latent_mask_to_frames,
-    overlap_freeze_scale, pack_refine_chunks, per_frame_strength,
+    loop_context_frames, overlap_freeze_scale, pack_refine_chunks, per_frame_strength,
     refine_paste_weight, select_chunk_span, segment_hold, sustained_visible,
 )
 from .nodes import (
@@ -192,6 +193,32 @@ def _audio_sidecar(frames_dir):
     if songs:
         return songs[0]
     return other[0] if other else None
+
+
+def _source_media_path(source, video_path=""):
+    """MP4 to pull soundtrack from: opened video, PNG sidecar, or video_path."""
+    if isinstance(source, _VideoFrames):
+        return os.path.abspath(source.path)
+    if isinstance(source, _ImageSeqFrames):
+        found = _audio_sidecar(source.path)
+        if found:
+            return found
+    path = str(video_path or "").strip()
+    if not path:
+        return None
+    try:
+        resolved = _resolve_media_path(path)
+    except ValueError:
+        return None
+    if os.path.isdir(resolved):
+        return _audio_sidecar(resolved)
+    if os.path.isfile(resolved):
+        return os.path.abspath(resolved)
+    return None
+
+
+def _empty_audio(sample_rate=44100):
+    return {"waveform": torch.zeros((1, 2, 1), dtype=torch.float32), "sample_rate": int(sample_rate)}
 
 
 def _ffmpeg_exe():
@@ -368,7 +395,6 @@ class _FrameWriter:
 
 
 def _audio_from_video(video_path, wav_path):
-    import torchaudio
     r = subprocess.run(
         [
             _ffmpeg_exe(), "-hide_banner", "-loglevel", "error", "-y",
@@ -379,12 +405,17 @@ def _audio_from_video(video_path, wav_path):
     )
     if r.returncode != 0 or not os.path.isfile(wav_path):
         raise RuntimeError(r.stderr[-2000:] if r.stderr else "no audio stream")
-    wf, sr = torchaudio.load(wav_path)
+    with wave.open(wav_path, "rb") as handle:
+        sr = int(handle.getframerate())
+        ch = int(handle.getnchannels())
+        n = int(handle.getnframes())
+        raw = handle.readframes(n)
     if os.path.isfile(wav_path):
         os.remove(wav_path)
-    if wf.ndim == 2:
-        wf = wf.unsqueeze(0)
-    return {"waveform": wf, "sample_rate": int(sr)}
+    samples = np.frombuffer(raw, dtype=np.int16).astype(np.float32).reshape(-1, max(ch, 1))
+    samples /= 32768.0
+    wf = torch.from_numpy(np.ascontiguousarray(samples.T)).unsqueeze(0)
+    return {"waveform": wf, "sample_rate": sr}
 
 
 def _progress(unique_id, text):
@@ -432,27 +463,6 @@ def _source_fingerprint(n, width, height, images=None, path=""):
                 u8 = (frame.float().clamp(0, 1) * 255).to(torch.uint8).numpy()
                 h.update(np.ascontiguousarray(u8[::32, ::32]).tobytes())
     return h.hexdigest()[:16]
-
-
-def _media_rel(abs_path):
-    abs_path = os.path.abspath(abs_path)
-    for root, kind in (
-        (folder_paths.get_temp_directory(), "temp"),
-        (folder_paths.get_output_directory(), "output"),
-        (folder_paths.get_input_directory(), "input"),
-    ):
-        root = os.path.abspath(root)
-        try:
-            rel = os.path.relpath(abs_path, root)
-        except ValueError:
-            continue
-        if rel.startswith(".."):
-            continue
-        sub = os.path.dirname(rel).replace("\\", "/")
-        if sub == ".":
-            sub = ""
-        return os.path.basename(rel), sub, kind
-    return os.path.basename(abs_path), "", "temp"
 
 
 def _load_json(path, default=None):
@@ -574,27 +584,35 @@ def _trim_mp4(src, dest, off, count, fps, crf=18):
     return kept
 
 
-def _write_source_range(path, source, start, end, fps, crf=18, dest=None, png_dir=None):
-    """Encode original frames without holding the whole span in RAM."""
-    start, end = int(start), int(end)
-    if end <= start:
-        return None
+def _write_source_range(path, source, start, end, fps, crf=18, dest=None, png_dir=None,
+                        extra=None):
+    """Encode original frames without holding the whole span in RAM.
+
+    ``extra`` is more ``(start, end)`` spans written into the same mp4 (loop wrap).
+    Dest / PNG writes still go to each span's source indices.
+    """
+    spans = [(int(start), int(end))]
+    if extra:
+        spans.extend((int(a), int(b)) for a, b in extra)
     writer = None
     preview = None
-    for i in range(start, end, WRITE_BATCH):
-        j = min(i + WRITE_BATCH, end)
-        frames = source[i:j][..., :3]
-        if dest is not None:
-            dest[i:j] = frames.to(device=dest.device, dtype=dest.dtype)
-        if png_dir is not None:
-            _write_png_range(png_dir, i, frames)
-        if writer is None:
-            writer = _FrameWriter(
-                path, int(frames.shape[2]), int(frames.shape[1]), fps, crf=int(crf),
-            )
-        writer.write(frames)
-        preview = frames[-1:].detach().cpu().contiguous()
-        del frames
+    for a, b in spans:
+        if b <= a:
+            continue
+        for i in range(a, b, WRITE_BATCH):
+            j = min(i + WRITE_BATCH, b)
+            frames = source[i:j][..., :3]
+            if dest is not None:
+                dest[i:j] = frames.to(device=dest.device, dtype=dest.dtype)
+            if png_dir is not None:
+                _write_png_range(png_dir, i, frames)
+            if writer is None:
+                writer = _FrameWriter(
+                    path, int(frames.shape[2]), int(frames.shape[1]), fps, crf=int(crf),
+                )
+            writer.write(frames)
+            preview = frames[-1:].detach().cpu().contiguous()
+            del frames
     if writer is not None:
         writer.close()
     return preview
@@ -830,29 +848,6 @@ def _concat_mp4s(paths, out_path, drop_audio=False):
             os.remove(list_path)
 
 
-def _send_video_preview(unique_id, abs_path):
-    if not unique_id or not abs_path or not os.path.isfile(abs_path):
-        return None
-    filename, subfolder, kind = _media_rel(abs_path)
-    entry = {"filename": filename, "subfolder": subfolder, "type": kind}
-    try:
-        from server import PromptServer
-        ps = PromptServer.instance
-        ps.send_sync(
-            "executed",
-            {
-                "node": unique_id,
-                "display_node": unique_id,
-                "output": {"images": [entry], "animated": (True,)},
-                "prompt_id": getattr(ps, "last_prompt_id", None),
-            },
-            ps.client_id,
-        )
-    except Exception:
-        pass
-    return entry
-
-
 def _delete_chunks_from(job_dir, first_index_0, n_chunks):
     for i in range(int(first_index_0), int(n_chunks)):
         for path in (
@@ -865,16 +860,6 @@ def _delete_chunks_from(job_dir, first_index_0, n_chunks):
                 os.remove(path)
 
 
-def _existing_chunk_paths(job_dir, n_chunks):
-    out = []
-    for i in range(int(n_chunks)):
-        p = _chunk_mp4(job_dir, i + 1)
-        if not os.path.isfile(p):
-            break
-        out.append(p)
-    return out
-
-
 def _slice_transform(xform, start, end):
     keys = ("boxes", "weights", "detected", "face_rect", "via_body", "face_h", "face_w")
     out = dict(xform)
@@ -883,6 +868,45 @@ def _slice_transform(xform, start, end):
             out[k] = list(xform[k][start:end])
     out["frames"] = int(end - start)
     return out
+
+
+def _concat_transform(a, b):
+    out = dict(a)
+    for k in ("boxes", "weights", "detected", "face_rect", "via_body", "face_h", "face_w"):
+        left = list(a.get(k) or [])
+        right = list(b.get(k) or [])
+        if left or right:
+            out[k] = left + right
+    out["frames"] = int(a.get("frames") or 0) + int(b.get("frames") or 0)
+    return out
+
+
+def _concat_audio(a, b):
+    if a is None:
+        return b
+    if b is None:
+        return a
+    if int(a["sample_rate"]) != int(b["sample_rate"]):
+        return a
+    return {
+        "waveform": torch.cat((a["waveform"], b["waveform"]), dim=-1),
+        "sample_rate": int(a["sample_rate"]),
+    }
+
+
+def _source_span(source, start, end):
+    start, end = int(start), int(end)
+    if end <= start:
+        h = int(source.shape[1]) if hasattr(source, "shape") else int(source.h)
+        w = int(source.shape[2]) if hasattr(source, "shape") else int(source.w)
+        return torch.zeros((0, h, w, 3), dtype=torch.float32)
+    parts = []
+    i = start
+    while i < end:
+        j = min(end, i + 256)
+        parts.append(source[i:j])
+        i = j
+    return parts[0] if len(parts) == 1 else torch.cat(parts, dim=0)
 
 
 def _pad_transform(xform, grid):
@@ -1007,18 +1031,16 @@ def _load_overlap_latent(path):
         return torch.load(path, map_location="cpu")
 
 
-def _continue_overlap_frames(chunks, index):
-    """Pixel overlap with the previous refine window, or 0."""
+def _loop_end_latent_path(job_dir):
+    return os.path.join(job_dir, "loop_end_latent.pt")
+
+
+def _continue_overlap_frames(chunks, index, overlap=CHUNK_OVERLAP):
+    """Pixel overlap frozen from the previous refine window, or 0."""
     index = int(index)
-    if index <= 0 or index >= len(chunks):
+    if index <= 0:
         return 0
-    prev = chunks[index - 1]
-    cur = chunks[index]
-    if len(prev) < 4 or len(cur) < 4:
-        return 0
-    if prev[3] != "refine" or cur[3] != "refine" or cur[0] >= prev[1]:
-        return 0
-    return min(int(prev[1] - cur[0]), int(cur[1] - cur[0]), int(prev[1] - prev[0]))
+    return segment_hold(chunks, index - 1, overlap)
 
 
 def _freeze_overlap_video(av, prev_video, overlap_frames, soft_steps=OVERLAP_SOFT_STEPS):
@@ -1048,6 +1070,58 @@ def _freeze_overlap_video(av, prev_video, overlap_frames, soft_steps=OVERLAP_SOF
     out = dict(av)
     out["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
     scale = overlap_freeze_scale(int(video.shape[-3]), ctx, soft_steps)
+    nm = out.get("noise_mask")
+    if nm is not None and (
+            isinstance(nm, comfy.nested_tensor.NestedTensor)
+            or getattr(nm, "is_nested", False)):
+        masks = list(nm.unbind())
+        vmask = masks[0]
+        view = [1] * vmask.ndim
+        view[-3] = int(scale.shape[0])
+        scale_t = torch.from_numpy(scale).to(
+            device=vmask.device, dtype=vmask.dtype
+        ).view(*view)
+        masks[0] = vmask * scale_t
+        out["noise_mask"] = comfy.nested_tensor.NestedTensor(tuple(masks))
+    return out, True
+
+
+def _freeze_overlap_video_tail(av, next_video, overlap_frames, body_frames,
+                               soft_steps=OVERLAP_SOFT_STEPS):
+    """Copy the following clip's opening tokens onto this clip's ending and freeze them."""
+    if next_video is None or int(overlap_frames) <= 0:
+        return av, False
+    samples = av.get("samples")
+    if samples is None or not (
+            isinstance(samples, comfy.nested_tensor.NestedTensor)
+            or getattr(samples, "is_nested", False)):
+        return av, False
+    members = list(samples.unbind())
+    video = members[0]
+    body_frames = max(0, int(body_frames))
+    post = max(0, int(overlap_frames))
+    t1 = min(h3_steps_covering(body_frames), int(video.shape[-3]))
+    t0 = min(h3_steps_covering(max(0, body_frames - post)), t1)
+    n_steps = t1 - t0
+    n_steps = min(n_steps, int(next_video.shape[-3]), t1)
+    if n_steps <= 0:
+        return av, False
+    src = next_video[:, :, :n_steps].to(device=video.device, dtype=video.dtype)
+    if tuple(src.shape[-2:]) != tuple(video.shape[-2:]):
+        return av, False
+    video = video.clone()
+    a = t1 - n_steps
+    video[:, :, a:t1] = src
+    members[0] = video
+    out = dict(av)
+    out["samples"] = comfy.nested_tensor.NestedTensor(tuple(members))
+    scale = np.ones(int(video.shape[-3]), dtype=np.float32)
+    scale[a:t1] = 0.0
+    soft = min(max(int(soft_steps), 0), n_steps - 1)
+    if soft > 0:
+        scale[a:a + soft] = (
+            np.arange(soft, 0, -1, dtype=np.float32) / float(soft + 1)
+        )
     nm = out.get("noise_mask")
     if nm is not None and (
             isinstance(nm, comfy.nested_tensor.NestedTensor)
@@ -1171,13 +1245,13 @@ class H3StudioFaceRefineVideo:
                                "Lower this if a pass OOMs.",
                 }),
                 "skip_closeup_frac": ("FLOAT", {
-                    "default": 0.28, "min": 0.05, "max": 0.9, "step": 0.01,
+                    "default": 0.22, "min": 0.05, "max": 0.9, "step": 0.01,
                     "tooltip": "Paste fully original when face height reaches this fraction of the frame. "
                                "Ramps from 0.06 below that so mixed shots do not pop. "
-                               "0.28 is a medium-close; talking-head close-ups stay original.",
+                               "0.22 is a medium-close; talking-head close-ups stay original.",
                 }),
-                "confidence": ("FLOAT", {"default": 0.35, "min": 0.05, "max": 0.95, "step": 0.05}),
-                "crop_factor": ("FLOAT", {"default": 2.5, "min": 1.2, "max": 8.0, "step": 0.1}),
+                "confidence": ("FLOAT", {"default": 0.15, "min": 0.05, "max": 0.95, "step": 0.05}),
+                "crop_factor": ("FLOAT", {"default": 2.0, "min": 1.2, "max": 8.0, "step": 0.1}),
                 "canvas_mode": (["auto_capped_768", "manual", "auto_no_downscale"], {
                     "default": "auto_capped_768",
                 }),
@@ -1213,9 +1287,8 @@ class H3StudioFaceRefineVideo:
                                "Stop early to preview; resume later with start_chunk 0.",
                 }),
                 "audio": ("AUDIO", {
-                    "tooltip": "Master song for H3 <Audio 1> / audio lock. Optional when video_path "
-                               "is a muxed MP4, or a PNG folder next to that MP4. Soundtrack is "
-                               "taken from the file for H3 and for saved clips.",
+                    "tooltip": "Soundtrack for H3 <Audio 1> / audio lock and for the AUDIO output. "
+                               "Optional when video_path is a muxed MP4, or a PNG folder next to that MP4.",
                 }),
                 "reference_image": ("IMAGE", {
                     "tooltip": "Identity still. Cropped to a headshot for Ref2VA <Picture 1>. "
@@ -1225,7 +1298,7 @@ class H3StudioFaceRefineVideo:
                     "tooltip": "Denoise multiplier on the smallest faces (full BasicScheduler denoise, "
                                "applied to face tokens only). Raise scheduler denoise to 0.55-0.7 "
                                "if mouths still barely move."}),
-                "strength_large_face": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.05,
+                "strength_large_face": ("FLOAT", {"default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05,
                     "tooltip": "Denoise multiplier on large-face frames inside a mixed chunk. "
                                "0 = do not rewrite close-ups even if the chunk ran H3."}),
                 "debug_videos": ("BOOLEAN", {
@@ -1234,12 +1307,18 @@ class H3StudioFaceRefineVideo:
                                "debug_mask_###.mp4 (inpaint ellipse + H3 token mask on the crop). "
                                "Concatenated to debug_track.mp4 / debug_mask.mp4 when every chunk exists.",
                 }),
+                "seamless_loop": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "Treat the clip as a loop. The last and first frames that need "
+                               "refine are generated as one wrap-around H3 pass (join in the "
+                               "middle of that clip) and split back onto the start and end.",
+                }),
             },
             "hidden": {"unique_id": "UNIQUE_ID"},
         }
 
-    RETURN_TYPES = ("IMAGE", "STRING")
-    RETURN_NAMES = ("images", "report")
+    RETURN_TYPES = ("IMAGE", "AUDIO", "STRING")
+    RETURN_NAMES = ("images", "audio", "report")
     FUNCTION = "run"
     OUTPUT_NODE = True
     CATEGORY = "H3 Studio"
@@ -1250,10 +1329,12 @@ class H3StudioFaceRefineVideo:
             canvas_mode, canvas_width, canvas_height, feather, detail_match=1.0,
             save_images_to_disk=False,
             images=None, audio=None,
-            reference_image=None, strength_small_face=1.0, strength_large_face=0.0,
-            video_path="", start_chunk=0, end_chunk=0, debug_videos=False, unique_id=None):
+            reference_image=None, strength_small_face=1.0, strength_large_face=0.9,
+            video_path="", start_chunk=0, end_chunk=0, debug_videos=False,
+            seamless_loop=False, unique_id=None):
         video_path = str(video_path or "").strip()
         save_images_to_disk = bool(save_images_to_disk)
+        seamless_loop = bool(seamless_loop)
         source = None
         file_mode = False
         fps = float(FPS)
@@ -1261,7 +1342,6 @@ class H3StudioFaceRefineVideo:
         png_dir = ""
         write_png_dir = None
         ram_dest = None
-        ui_preview = None
         notes = []
         n = 0
         canvas_w = canvas_h = 0
@@ -1306,12 +1386,7 @@ class H3StudioFaceRefineVideo:
             overlap_path = _overlap_latent_path(job_dir)
             png_dir = _job_frames_dir(job_dir)
             write_png_dir = png_dir if save_images_to_disk else None
-            if isinstance(source, _VideoFrames):
-                source_media = os.path.abspath(source.path)
-            elif isinstance(source, _ImageSeqFrames):
-                source_media = _audio_sidecar(source.path)
-            else:
-                source_media = None
+            source_media = _source_media_path(source, video_path)
             fp = {
                 "n": int(n),
                 "detector": str(detector),
@@ -1329,15 +1404,17 @@ class H3StudioFaceRefineVideo:
                 "crop_aspect": "canvas",
                 "crop_lock": "causal_scale",
                 "chunk_pack": "shot_hull",
+                "loop_wrap": "join_ctx" if seamless_loop else "off",
                 "write_span": "committed",
                 "skip_closeup_frac": round(float(skip_closeup_frac), 5),
                 "min_visible_sec": float(MIN_VISIBLE_SEC),
+                "seamless_loop": bool(seamless_loop),
             }
             state = _load_json(state_path, {}) or {}
             track_keys = (
                 "n", "detector", "confidence", "crop_factor", "canvas_mode",
                 "canvas_width", "canvas_height", "source", "source_fp", "inpaint",
-                "crop_plan", "crop_aspect", "crop_lock",
+                "crop_plan", "crop_aspect", "crop_lock", "seamless_loop",
             )
             track_ok = all(state.get(k) == fp[k] for k in track_keys)
             fp_ok = all(state.get(k) == v for k, v in fp.items())
@@ -1354,7 +1431,7 @@ class H3StudioFaceRefineVideo:
                     source, detector, confidence, crop_factor, canvas_width, canvas_height,
                     canvas_mode, 21, 51, "gaussian", "per_frame",
                     identity_reference=reference_image, identity_track=True,
-                    build_crops=False,
+                    build_crops=False, seamless_loop=seamless_loop,
                 )
                 del _crops, _preview
                 _save_xform(xform_path, xform)
@@ -1391,9 +1468,11 @@ class H3StudioFaceRefineVideo:
             )
             chunks = pack_refine_chunks(
                 need, n, max_chunk, overlap=overlap, breaks=pack_breaks,
+                loop=seamless_loop,
             )
-            n_refine = sum(1 for c in chunks if c[3] == "refine")
+            n_refine = sum(1 for c in chunks if c[3] in ("refine", "loop"))
             n_copy = sum(1 for c in chunks if c[3] == "copy")
+            n_loop = sum(1 for c in chunks if c[3] == "loop")
             sampled_n = int(np.asarray(need).sum())
             brief_n = int(detected_all.sum()) - int(sampleable_all.sum())
             uniform_n = len(chunk_ranges(n, max_chunk, overlap=overlap))
@@ -1403,6 +1482,11 @@ class H3StudioFaceRefineVideo:
                 f"{sampled_n}/{n} frames need paste, {n_copy} copy spans streamed; "
                 f"{n_mv} MaskVid teleports; uniform {max_chunk}f grid would be {uniform_n} passes"
             )
+            if n_loop:
+                ls, le, lg, _ = next(c for c in chunks if c[3] == "loop")
+                pack_line += f"; seamless loop wrap {ls}-{n}+0-{le} ({lg}f)"
+            elif seamless_loop:
+                pack_line += "; seamless loop on (join frames do not need paste)"
             if brief_n > 0:
                 pack_line += (
                     f"; skipped {brief_n} brief-face frames "
@@ -1471,13 +1555,13 @@ class H3StudioFaceRefineVideo:
 
             if first > last:
                 notes.append("nothing to do (already complete for this range)")
-                parts = _existing_chunk_paths(job_dir, len(chunks))
-                if parts:
-                    ui_preview = _send_video_preview(unique_id, parts[-1])
             else:
                 _delete_chunks_from(job_dir, first, len(chunks))
                 if write_png_dir:
-                    _delete_png_from(write_png_dir, int(chunks[first][0]), n)
+                    del_from = int(chunks[first][0])
+                    if chunks[first][3] == "loop":
+                        del_from = 0
+                    _delete_png_from(write_png_dir, del_from, n)
                     os.makedirs(write_png_dir, exist_ok=True)
                     with open(os.path.join(write_png_dir, "fps.txt"), "w", encoding="utf-8") as f:
                         f.write(f"{float(fps):g}\n")
@@ -1492,17 +1576,16 @@ class H3StudioFaceRefineVideo:
                 else:
                     pending = _load_pending(pending_path)
                     ov_lat = _overlap_latent_path(job_dir)
-                    if _continue_overlap_frames(chunks, first) and not os.path.isfile(ov_lat):
+                    if _continue_overlap_frames(chunks, first, overlap) and not os.path.isfile(ov_lat):
                         notes.append(
                             f"no overlap latent at chunk {first + 1}; this pass starts fresh"
                         )
                 committed_cursor = int(chunks[first][0])
-                h3_i = sum(1 for c in chunks[:first] if c[3] == "refine")
+                h3_i = sum(1 for c in chunks[:first] if c[3] in ("refine", "loop"))
+                loop_chunk = next((c for c in chunks if c[3] == "loop"), None)
+                loop_end_path = _loop_end_latent_path(job_dir)
 
-                def finish_chunk(ci, chunk_path, start_frame, n_frames):
-                    nonlocal ui_preview
-                    if n_frames > 0 and chunk_path and os.path.isfile(chunk_path):
-                        ui_preview = _send_video_preview(unique_id, chunk_path)
+                def finish_chunk(ci, start_frame, n_frames):
                     if pending is not None:
                         _save_pending(pending_path, pending)
                     elif os.path.isfile(pending_path):
@@ -1545,17 +1628,44 @@ class H3StudioFaceRefineVideo:
                             ci + 1, write_start, write_end,
                         )
                         n_written = write_end - write_start
-                        finish_chunk(
-                            ci, chunk_path if n_written else None, write_start, n_written,
-                        )
+                        finish_chunk(ci, write_start, n_written)
                         committed_cursor = max(committed_cursor, write_end, end)
                         if os.path.isfile(overlap_path):
                             os.remove(overlap_path)
                         continue
 
-                    sl = _slice_transform(xform, start, end)
+                    is_loop = kind == "loop"
+                    pre_n = post_n = 0
+                    if is_loop:
+                        pre_n, post_n = loop_context_frames(start, end, n, overlap)
+                        tail_n = n - int(start)
+                        head_n = int(end)
+                        body_n = tail_n + head_n
+                        gen_tail0 = int(start) - pre_n
+                        gen_head1 = int(end) + post_n
+                        sl = _concat_transform(
+                            _slice_transform(xform, gen_tail0, n),
+                            _slice_transform(xform, 0, gen_head1),
+                        )
+                        detected = np.concatenate(
+                            [sampleable_all[gen_tail0:n], sampleable_all[0:gen_head1]]
+                        )
+                        src = torch.cat(
+                            (
+                                _source_span(source, gen_tail0, n),
+                                _source_span(source, 0, gen_head1),
+                            ),
+                            dim=0,
+                        )
+                    else:
+                        tail_n = head_n = 0
+                        body_n = int(end) - int(start)
+                        gen_tail0 = int(start)
+                        gen_head1 = int(end)
+                        sl = _slice_transform(xform, start, end)
+                        detected = sampleable_all[start:end]
+                        src = source[start:end]
                     face = _face_heights(sl)
-                    detected = sampleable_all[start:end]
                     strength = per_frame_strength(
                         face, px_small, px_large,
                         float(strength_small_face), float(strength_large_face),
@@ -1565,47 +1675,63 @@ class H3StudioFaceRefineVideo:
                         float(xform.get("crop_factor", crop_factor)),
                         canvas_h, strength,
                     )
-                    src = source[start:end]
                     if chunk_is_all_closeup(paste_w, detected):
                         skipped_n += 1
                         del src
-                        write_start, write_end = committed_write_span(
-                            start, end, committed_cursor, hold=0, is_last=True,
-                        )
-                        preview = _write_source_range(
-                            chunk_path, source, write_start, write_end, fps,
-                            dest=ram_dest, png_dir=write_png_dir,
-                        )
-                        notes.append(
-                            f"file {ci + 1} {write_start}-{write_end} copy (close-up / no face)"
-                        )
+                        if is_loop:
+                            preview = _write_source_range(
+                                chunk_path, source, start, n, fps,
+                                dest=ram_dest, png_dir=write_png_dir,
+                                extra=((0, end),),
+                            )
+                            notes.append(
+                                f"file {ci + 1} loop copy {start}-{n} + 0-{end} "
+                                f"(close-up / no face)"
+                            )
+                            n_written = tail_n + head_n
+                            finish_chunk(ci, 0, n)
+                            committed_cursor = n
+                        else:
+                            write_start, write_end = committed_write_span(
+                                start, end, committed_cursor, hold=0, is_last=True,
+                            )
+                            preview = _write_source_range(
+                                chunk_path, source, write_start, write_end, fps,
+                                dest=ram_dest, png_dir=write_png_dir,
+                            )
+                            notes.append(
+                                f"file {ci + 1} {write_start}-{write_end} copy (close-up / no face)"
+                            )
+                            n_written = write_end - write_start
+                            finish_chunk(ci, write_start, n_written)
+                            committed_cursor = max(committed_cursor, write_end, end)
                         _LOG.info(
-                            "h3_facerefine: copy %s frames %s-%s",
-                            ci + 1, write_start, write_end,
+                            "h3_facerefine: copy %s frames loop=%s",
+                            ci + 1, is_loop,
                         )
-                        n_written = write_end - write_start
-                        finish_chunk(
-                            ci, chunk_path if n_written else None, write_start, n_written,
-                        )
-                        committed_cursor = max(committed_cursor, write_end, end)
                         if os.path.isfile(overlap_path):
                             os.remove(overlap_path)
                         continue
 
-                    write_start, write_end = committed_write_span(
-                        start, end, committed_cursor, hold, source_last,
-                    )
-                    dbg_skip = max(0, write_start - start)
-                    dbg_take = max(0, write_end - write_start)
+                    if is_loop:
+                        write_start, write_end = 0, body_n
+                        source_last = True
+                        hold = 0
+                    else:
+                        write_start, write_end = committed_write_span(
+                            start, end, committed_cursor, hold, source_last,
+                        )
+                    dbg_skip = 0 if is_loop else max(0, write_start - start)
+                    dbg_take = body_n if is_loop else max(0, write_end - write_start)
                     if debug_videos and dbg_take > 0:
                         try:
-                            sl_dbg = _slice_transform(xform, write_start, write_end)
+                            sl_dbg = sl if is_loop else _slice_transform(xform, write_start, write_end)
                             tpath, mpath = _write_debug_chunk(
                                 job_dir, ci + 1,
                                 src[dbg_skip:dbg_skip + dbg_take], sl_dbg,
                                 paste_w[dbg_skip:dbg_skip + dbg_take],
                                 strength[dbg_skip:dbg_skip + dbg_take],
-                                write_start, fps,
+                                start if is_loop else write_start, fps,
                             )
                             notes.append(
                                 f"file {ci + 1} debug {os.path.basename(tpath)} "
@@ -1626,11 +1752,25 @@ class H3StudioFaceRefineVideo:
                         float(a) * float(b) for a, b in zip(wt[:grid], pw[:grid])
                     ]
                     pad_crops = _pad_images(crop_transform_frames(src, sl), grid)
-                    pad_audio = _slice_audio(audio, start, grid, fps=fps)
+                    if is_loop:
+                        pad_audio = _concat_audio(
+                            _slice_audio(audio, gen_tail0, n - gen_tail0, fps=fps),
+                            _slice_audio(audio, 0, gen_head1, fps=fps),
+                        )
+                        if pad_audio is not None:
+                            pad_audio = _slice_audio(pad_audio, 0, grid, fps=fps)
+                    else:
+                        pad_audio = _slice_audio(audio, start, grid, fps=fps)
                     h3_i += 1
                     _progress(
                         unique_id,
-                        f"H3 pass {h3_i}/{n_refine} frames {start}-{end} ({grid} H3)",
+                        f"H3 pass {h3_i}/{n_refine} "
+                        + (
+                            f"loop {start}-{n}+0-{end} ({grid} H3"
+                            + (f", Continue {pre_n}f + end {post_n}f)" if (pre_n or post_n) else ")")
+                            if is_loop else
+                            f"frames {start}-{end} ({grid} H3)"
+                        ),
                     )
 
                     _release_loaded_models()
@@ -1650,7 +1790,9 @@ class H3StudioFaceRefineVideo:
                         float(px_small), float(px_large), float(DENOISE_GAMMA), 9,
                         scale_mode="absolute_px",
                     )
-                    ctx_frames = _continue_overlap_frames(chunks, ci)
+                    ctx_frames = _continue_overlap_frames(chunks, ci, overlap)
+                    if is_loop:
+                        ctx_frames = pre_n
                     if ctx_frames:
                         prev_video = _load_overlap_latent(overlap_path)
                         if prev_video is not None:
@@ -1671,6 +1813,29 @@ class H3StudioFaceRefineVideo:
                                 f"file {ci + 1} Continue skip "
                                 f"(overlap {ctx_frames}f, no overlap latent)"
                             )
+                    if is_loop and post_n:
+                        end_video = _load_overlap_latent(loop_end_path)
+                        if end_video is not None:
+                            full_n = body_n + pre_n + post_n
+                            av, froze_end = _freeze_overlap_video_tail(
+                                av, end_video, post_n, full_n,
+                            )
+                            if froze_end:
+                                notes.append(
+                                    f"file {ci + 1} loop end freeze {post_n}f "
+                                    f"(clip opening, {h3_steps_covering(post_n)} latent steps)"
+                                )
+                            else:
+                                notes.append(
+                                    f"file {ci + 1} loop end skip "
+                                    f"(opening {post_n}f, latent mismatch)"
+                                )
+                            del end_video
+                        else:
+                            notes.append(
+                                f"file {ci + 1} loop end skip "
+                                f"(opening {post_n}f, no loop-end latent)"
+                            )
                     _release_loaded_models()
                     sampled = _sample_segment(model, positive, sampler, sigmas, noise, av)
                     del positive, av
@@ -1687,16 +1852,24 @@ class H3StudioFaceRefineVideo:
                         )
                     elif os.path.isfile(overlap_path):
                         os.remove(overlap_path)
+                    if (
+                        loop_chunk is not None and not is_loop
+                        and int(start) == int(loop_chunk[1])
+                    ):
+                        _save_overlap_latent(
+                            loop_end_path, list(last_lat["samples"].unbind())[0],
+                        )
                     _release_loaded_models()
 
                     refined = _decode_video(vae, last_lat)
                     del last_lat
                     _release_loaded_models()
-                    refined = refined[: end - start].to(device=src.device, dtype=src.dtype)
+                    take_n = body_n + pre_n + post_n if is_loop else body_n
+                    refined = refined[:take_n].to(device=src.device, dtype=src.dtype)
 
                     paste_sl = dict(sl)
-                    paste_sl["detected"] = [bool(v) for v in detected.tolist()]
-                    det_w = list(paste_sl.get("weights") or [1.0] * (end - start))
+                    paste_sl["detected"] = [bool(v) for v in np.asarray(detected).tolist()]
+                    det_w = list(paste_sl.get("weights") or [1.0] * take_n)
                     paste_sl["weights"] = [
                         float(w) * float(pw) for w, pw in zip(det_w, paste_w.tolist())
                     ]
@@ -1706,34 +1879,76 @@ class H3StudioFaceRefineVideo:
                         1.0, 1.0, float(detail_match), undetected_frames="fade_out",
                     )[0]
                     del refined
-                    skip = write_start - start
-                    take = write_end - write_start
-                    if take > 0:
-                        pending, written = _commit_chunk(
-                            stitched[skip:skip + take], pending, 0, True,
-                            ram_dest, write_start,
+                    if is_loop:
+                        write_pre = pre_n > 0 and committed_cursor <= gen_tail0
+                        off = 0 if write_pre else pre_n
+                        pending, written_t = _commit_chunk(
+                            stitched[off:pre_n + tail_n], None, 0, True,
+                            ram_dest, gen_tail0 if write_pre else start,
+                        )
+                        pending, written_h = _commit_chunk(
+                            stitched[pre_n + tail_n:pre_n + body_n], None, 0, True,
+                            ram_dest, 0,
+                        )
+                        written = (
+                            torch.cat((written_t, written_h), dim=0)
+                            if int(written_t.shape[0]) + int(written_h.shape[0])
+                            else stitched[:0]
+                        )
+                        if write_png_dir:
+                            if int(written_t.shape[0]):
+                                _write_png_range(
+                                    write_png_dir,
+                                    gen_tail0 if write_pre else start,
+                                    written_t,
+                                )
+                            if int(written_h.shape[0]):
+                                _write_png_range(write_png_dir, 0, written_h)
+                        n_written = int(written.shape[0])
+                        if n_written:
+                            _write_frames_mp4(chunk_path, written, fps)
+                            preview = written[-1:].detach().cpu().contiguous()
+                        finish_chunk(ci, 0, n)
+                        committed_cursor = n
+                        notes.append(
+                            f"file {ci + 1} H3 loop {start}-{n}+0-{end} "
+                            f"({grid}f, {tail_n}+{head_n} write"
+                            + (
+                                f", Continue {pre_n}f + end {post_n}f"
+                                if pre_n or post_n else ""
+                            )
+                            + ") "
+                            f"({int(np.asarray(detected).sum())} faces, "
+                            f"paste mean {float(paste_w.mean()):.2f}, "
+                            f"denoise mean {float(strength.mean()):.2f}, face-token inpaint)"
                         )
                     else:
-                        pending, written = None, stitched[:0]
+                        skip = write_start - start
+                        take = write_end - write_start
+                        if take > 0:
+                            pending, written = _commit_chunk(
+                                stitched[skip:skip + take], pending, 0, True,
+                                ram_dest, write_start,
+                            )
+                        else:
+                            pending, written = None, stitched[:0]
+                        n_written = int(written.shape[0]) if written is not None else 0
+                        if n_written:
+                            _write_frames_mp4(chunk_path, written, fps)
+                            if write_png_dir:
+                                _write_png_range(write_png_dir, write_start, written)
+                            preview = written[-1:].detach().cpu().contiguous()
+                        finish_chunk(ci, write_start, n_written)
+                        committed_cursor = max(committed_cursor, write_end)
+                        notes.append(
+                            f"file {ci + 1} H3 packed {start}-{end} write {write_start}-{write_end} "
+                            f"({grid}f) "
+                            f"({int(np.asarray(detected).sum())} faces, paste mean {float(paste_w.mean()):.2f}, "
+                            f"denoise mean {float(strength.mean()):.2f}, face-token inpaint)"
+                        )
                     del src, stitched
-                    n_written = int(written.shape[0]) if written is not None else 0
-                    if n_written:
-                        _write_frames_mp4(chunk_path, written, fps)
-                        if write_png_dir:
-                            _write_png_range(write_png_dir, write_start, written)
-                        preview = written[-1:].detach().cpu().contiguous()
-                    finish_chunk(
-                        ci, chunk_path if n_written else None, write_start, n_written,
-                    )
-                    committed_cursor = max(committed_cursor, write_end)
                     del written
                     refined_n += 1
-                    notes.append(
-                        f"file {ci + 1} H3 packed {start}-{end} write {write_start}-{write_end} "
-                        f"({grid}f) "
-                        f"({int(detected.sum())} faces, paste mean {float(paste_w.mean()):.2f}, "
-                        f"denoise mean {float(strength.mean()):.2f}, face-token inpaint)"
-                    )
                     _LOG.info(
                         "h3_facerefine: H3 pass %s/%s frames %s-%s grid %s",
                         h3_i, n_refine, start, end, grid,
@@ -1771,11 +1986,5 @@ class H3StudioFaceRefineVideo:
             + "\n" + "\n".join(notes)
         )
         print("[H3FaceRefine] " + report.replace("\n", "\n[H3FaceRefine] "))
-        if write_png_dir and png_count(write_png_dir) > 0:
-            return pack_image_output(result_images, write_png_dir, report)
-        if ui_preview is not None:
-            return {
-                "ui": {"images": [ui_preview], "animated": (True,)},
-                "result": (result_images, report),
-            }
-        return pack_image_output(result_images, None, report)
+        out_audio = audio if audio is not None else _empty_audio()
+        return pack_image_output(result_images, write_png_dir, out_audio, report)

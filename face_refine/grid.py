@@ -165,8 +165,153 @@ def _pack_runs_to_max(runs, max_span):
     return out
 
 
+def loop_span_len(tail_start, head_end, n_frames):
+    return int(n_frames) - int(tail_start) + int(head_end)
+
+
+def loop_context_frames(tail_start, head_end, n_frames, overlap):
+    """Continue context on each side of a wrap write, or (0, 0) if none.
+
+    ``pre`` frames before ``tail_start`` are the previous clip's ending.
+    ``post`` frames after ``head_end`` are the following clip's opening.
+    """
+    tail_start = int(tail_start)
+    head_end = int(head_end)
+    n_frames = int(n_frames)
+    overlap = max(0, int(overlap))
+    if overlap <= 0 or n_frames < 2 or head_end >= tail_start:
+        return 0, 0
+    room = tail_start - head_end
+    pre = min(overlap, tail_start, room)
+    post = min(overlap, n_frames - head_end, room - pre)
+    return max(0, pre), max(0, post)
+
+
+def _join_wrap_span(take_head, take_tail, n_frames, max_chunk, min_refine):
+    """Cap a wrap around frame 0 so it fits ``max_chunk`` and does not overlap."""
+    n_frames = int(n_frames)
+    max_chunk = int(max_chunk)
+    min_refine = max(1, int(min_refine))
+    take_head = max(0, int(take_head))
+    take_tail = max(0, int(take_tail))
+    if take_head + take_tail < min_refine:
+        return None
+    if take_head + take_tail >= n_frames:
+        if n_frames < min_refine:
+            return None
+        if n_frames <= max_chunk:
+            mid = max(1, n_frames // 2)
+            return mid, mid
+        take_tail = max_chunk // 2
+        take_head = max_chunk - take_tail
+        return n_frames - take_tail, take_head
+    if take_head + take_tail > max_chunk:
+        want_tail = min(take_tail, max_chunk // 2)
+        want_head = min(take_head, max_chunk - want_tail)
+        extra = max_chunk - want_tail - want_head
+        if extra > 0:
+            grow = min(extra, take_tail - want_tail)
+            want_tail += grow
+            extra -= grow
+            want_head += min(extra, take_head - want_head)
+        take_head, take_tail = want_head, want_tail
+        if take_head + take_tail < min_refine:
+            return None
+    if take_head + take_tail > n_frames:
+        take_tail = n_frames - take_head
+    return n_frames - take_tail, take_head
+
+
+def wrap_refine_window(need, n_frames, max_chunk, min_refine=MIN_REFINE, overlap=0):
+    """(tail_start, head_end) for a wrap-around H3 *write*, or None.
+
+    Uses paste-need at the actual join, not shot hulls. Adjacent MaskVid
+    shots that meet in the middle still wrap. ``overlap`` reserves Continue
+    context on both sides so the H3 generate can freeze the previous clip's
+    ending and the following clip's opening, same sandwich as Auto Chain.
+    ``head_end`` is exclusive.
+    """
+    n_frames = int(n_frames)
+    max_chunk = align_h3_frames(max(5, int(max_chunk)))
+    min_refine = max(1, int(min_refine))
+    overlap = max(0, int(overlap))
+    if n_frames < 2:
+        return None
+    need = np.asarray(need, dtype=bool).reshape(-1)
+    if need.size != n_frames:
+        padded = np.zeros(n_frames, dtype=bool)
+        ncopy = min(int(need.size), n_frames)
+        if ncopy:
+            padded[:ncopy] = need[:ncopy]
+        need = padded
+    if not bool(need[0] or need[-1]):
+        return None
+    head_end = 0
+    while head_end < n_frames and need[head_end]:
+        head_end += 1
+    tail_start = n_frames
+    while tail_start > 0 and need[tail_start - 1]:
+        tail_start -= 1
+    take_head = head_end
+    take_tail = n_frames - tail_start
+    ctx = min(CHUNK_OVERLAP, n_frames - 1)
+    if take_head == 0 and take_tail > 0:
+        take_head = min(ctx, n_frames - take_tail)
+    if take_tail == 0 and take_head > 0:
+        take_tail = min(ctx, n_frames - take_head)
+    span = _join_wrap_span(take_head, take_tail, n_frames, max_chunk, min_refine)
+    if span is None:
+        return None
+    tail_start, head_end = span
+    if loop_span_len(tail_start, head_end, n_frames) >= n_frames:
+        return span
+    ctx_budget = min(overlap, max_chunk // 4)
+    write_cap = max_chunk - 2 * ctx_budget
+    if write_cap < min_refine:
+        return span
+    span2 = _join_wrap_span(take_head, take_tail, n_frames, write_cap, min_refine)
+    if span2 is None:
+        return span
+    t2, h2 = span2
+    if h2 >= t2:
+        return span
+    return span2
+
+
+def _wrap_interior_breaks(breaks, n_frames, head_end, tail_start):
+    br = np.zeros(int(n_frames), dtype=bool)
+    if breaks is not None:
+        src = np.asarray(breaks, dtype=bool).reshape(-1)
+        ncopy = min(int(src.size), int(n_frames))
+        if ncopy:
+            br[:ncopy] = src[:ncopy]
+    br[0] = True
+    if 0 < int(head_end) < int(n_frames):
+        br[int(head_end)] = True
+    if 0 < int(tail_start) < int(n_frames):
+        br[int(tail_start)] = True
+    return br
+
+
+def _keep_interior_segs(segs, head_end, tail_start):
+    out = []
+    lo, hi = int(head_end), int(tail_start)
+    if hi <= lo:
+        return out
+    for start, end, grid, kind in segs:
+        a, b = max(int(start), lo), min(int(end), hi)
+        if b <= a:
+            continue
+        if kind == "copy":
+            out.append((a, b, b - a, "copy"))
+        else:
+            out.append((a, b, align_h3_frames(b - a), kind))
+    return out
+
+
 def pack_refine_chunks(need, n_frames, max_chunk, overlap=0, merge_gap=None,
-                       breaks=None, boxes=None, src_size=None, min_refine=MIN_REFINE):
+                       breaks=None, boxes=None, src_size=None, min_refine=MIN_REFINE,
+                       loop=False):
     """H3 windows for whole MaskVid shots that need any paste; copy the rest.
 
     ``max_chunk`` is a cap. Packing cuts are ``breaks`` (MaskVid crop
@@ -175,7 +320,12 @@ def pack_refine_chunks(need, n_frames, max_chunk, overlap=0, merge_gap=None,
     split like ``chunk_ranges``. ``boxes`` + ``src_size`` is only a
     fallback when ``breaks`` is omitted.
 
-    Returns (start, end, grid, kind) with kind ``refine`` or ``copy``.
+    ``loop`` adds a wrap-around ``loop`` chunk when the join frames need
+    paste, so last/first are generated as one clip even if a MaskVid cut
+    sits between the last shot and the first.
+
+    Returns (start, end, grid, kind) with kind ``refine``, ``copy``, or ``loop``.
+    A ``loop`` chunk is ``source[start:n] + source[0:end]``.
     """
     n_frames = int(n_frames)
     if n_frames <= 0:
@@ -203,6 +353,32 @@ def pack_refine_chunks(need, n_frames, max_chunk, overlap=0, merge_gap=None,
         runs = _pack_runs_to_max(
             _merge_runs(_need_runs(need), merge_gap), max_chunk,
         )
+    if loop:
+        wrap = wrap_refine_window(
+            need, n_frames, max_chunk, min_refine, overlap=overlap,
+        )
+        if wrap is not None:
+            tail_start, head_end = wrap
+            mid = need.copy()
+            mid[:head_end] = False
+            mid[tail_start:] = False
+            segs = pack_refine_chunks(
+                mid, n_frames, max_chunk, overlap=overlap, merge_gap=merge_gap,
+                breaks=_wrap_interior_breaks(breaks, n_frames, head_end, tail_start),
+                min_refine=min_refine, loop=False,
+            )
+            segs = _keep_interior_segs(segs, head_end, tail_start)
+            write_len = loop_span_len(tail_start, head_end, n_frames)
+            pre, post = loop_context_frames(
+                tail_start, head_end, n_frames, overlap,
+            )
+            if not any(s[3] == "refine" for s in segs):
+                pre = post = 0
+            segs.append((
+                int(tail_start), int(head_end),
+                align_h3_frames(write_len + pre + post), "loop",
+            ))
+            return segs
     refine = []
     for a, b in runs:
         span = b - a
@@ -268,7 +444,10 @@ def job_hold(jobs, index, overlap):
 
 
 def segment_hold(chunks, index, overlap):
-    """Overlap frames to hold only between two overlapping refine windows."""
+    """Overlap frames to hold only between two overlapping refine windows.
+
+    A refine followed by a loop holds Continue context for the wrap head.
+    """
     index = int(index)
     if index >= len(chunks) - 1:
         return 0
@@ -276,9 +455,15 @@ def segment_hold(chunks, index, overlap):
     b = chunks[index + 1]
     if len(a) < 4 or len(b) < 4:
         return max(0, int(overlap))
+    overlap = max(0, int(overlap))
+    if a[3] == "refine" and b[3] == "loop":
+        gap = int(b[0]) - int(b[1])
+        if gap <= 0:
+            return 0
+        return min(overlap, gap, int(a[1] - a[0]))
     if a[3] != "refine" or b[3] != "refine" or b[0] >= a[1]:
         return 0
-    return min(max(0, int(overlap)), int(a[1] - b[0]), int(a[1] - a[0]))
+    return min(overlap, int(a[1] - b[0]), int(a[1] - a[0]))
 
 
 def committed_write_span(start, end, committed, hold=0, is_last=False):
@@ -320,6 +505,9 @@ def committed_file_spans(chunks, overlap):
     for i, (start, end, _grid, kind) in enumerate(chunks):
         start, end = int(start), int(end)
         is_last = i == n - 1
+        if kind == "loop":
+            out.append((start, end, start, start, kind))
+            continue
         if kind != "refine":
             ws, we = committed_write_span(start, end, committed, hold=0, is_last=True)
             out.append((start, end, ws, we, kind))
@@ -455,15 +643,22 @@ def h3_steps_covering(n_frames):
     return t
 
 
-def overlap_freeze_scale(latent_t, ctx_steps, soft_steps=OVERLAP_SOFT_STEPS):
-    """Per-step denoise scale for a frozen Continue head. 1 = sample, 0 = keep."""
+def overlap_freeze_scale(latent_t, ctx_steps, soft_steps=OVERLAP_SOFT_STEPS, tail=False):
+    """Per-step denoise scale for a frozen Continue head or tail. 1 = sample, 0 = keep."""
     t = max(1, int(latent_t))
     scale = np.ones(t, dtype=np.float32)
     ctx = min(max(0, int(ctx_steps)), t)
     if ctx <= 0 or ctx >= t:
         return scale
-    scale[:ctx] = 0.0
     soft = min(max(int(soft_steps), 0), ctx - 1)
+    if tail:
+        scale[-ctx:] = 0.0
+        if soft > 0:
+            scale[-ctx:-ctx + soft] = (
+                np.arange(soft, 0, -1, dtype=np.float32) / float(soft + 1)
+            )
+        return scale
+    scale[:ctx] = 0.0
     if soft > 0:
         scale[ctx - soft:ctx] = (
             np.arange(1, soft + 1, dtype=np.float32) / float(soft + 1)
@@ -568,7 +763,7 @@ def shot_breaks_from_tracks(cx, cy, sz, jump_frac=0.55, size_ratio=1.8):
     return br
 
 
-def _gauss_smooth(vals, window):
+def _gauss_smooth(vals, window, wrap=False):
     vals = np.asarray(vals, dtype=np.float64)
     if window <= 1 or len(vals) < 3:
         return vals.copy()
@@ -578,7 +773,7 @@ def _gauss_smooth(vals, window):
     if window < 3:
         return vals.copy()
     pad = window // 2
-    padded = np.pad(vals, pad, mode="reflect")
+    padded = np.pad(vals, pad, mode="wrap" if wrap else "reflect")
     x = np.arange(window, dtype=np.float64) - pad
     sigma = max(window / 6.0, 0.5)
     k = np.exp(-0.5 * (x / sigma) ** 2)
@@ -605,7 +800,7 @@ def _gauss_smooth_causal(vals, window):
     return out
 
 
-def smooth_per_shot(vals, breaks, window=9, causal=False):
+def smooth_per_shot(vals, breaks, window=9, causal=False, loop=False):
     """Gaussian smooth inside each shot; do not blend across planner cuts."""
     vals = np.asarray(vals, dtype=np.float64)
     br = np.asarray(breaks, dtype=bool)
@@ -623,15 +818,33 @@ def smooth_per_shot(vals, breaks, window=9, causal=False):
             j += 1
         out[i:j] = fn(vals[i:j], window)
         i = j
+    if loop and n >= 3:
+        if int(br[1:].sum()) == 0:
+            return _gauss_smooth(vals, window, wrap=True)
+        j = 1
+        while j < n and not br[j]:
+            j += 1
+        k = n
+        for i in range(n - 1, 0, -1):
+            if br[i]:
+                k = i
+                break
+        if 0 < k < n and j > 0:
+            wrap_vals = np.concatenate([vals[k:], vals[:j]])
+            sm = _gauss_smooth(wrap_vals, window)
+            out[k:] = sm[: n - k]
+            out[:j] = sm[n - k:]
     return out
 
 
 def follow_face_boxes(cx, cy, sz, crop_factor, src_w, src_h, aspect, breaks,
-                      pos_window=9, size_window=15):
+                      pos_window=9, size_window=15, loop=False):
     """Smooth pan and zoom inside a shot; snap on cuts. Face stays canvas-centred."""
-    cx_s = smooth_per_shot(cx, breaks, pos_window)
-    cy_s = smooth_per_shot(cy, breaks, pos_window)
-    sz_s = np.maximum(smooth_per_shot(sz, breaks, size_window, causal=True), 1.0)
+    cx_s = smooth_per_shot(cx, breaks, pos_window, loop=loop)
+    cy_s = smooth_per_shot(cy, breaks, pos_window, loop=loop)
+    sz_s = np.maximum(
+        smooth_per_shot(sz, breaks, size_window, causal=not loop, loop=loop), 1.0,
+    )
     aspect = float(aspect) if aspect > 1e-6 else 1.0
     cf = float(crop_factor)
     W, H = float(src_w), float(src_h)

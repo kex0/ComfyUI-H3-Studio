@@ -167,13 +167,22 @@ def _to_bgr_u8(img: torch.Tensor) -> np.ndarray:
     return a[..., ::-1].copy()
 
 
-def _interp_gaps(vals: np.ndarray, valid: np.ndarray) -> np.ndarray:
-    """Fill non-detected frames by linear interpolation; hold at the ends."""
+def _interp_gaps(vals: np.ndarray, valid: np.ndarray, loop=False) -> np.ndarray:
+    """Fill non-detected frames by linear interpolation; hold at the ends.
+
+    ``loop`` interpolates across the wrap so start/end dropouts stay seamless.
+    """
     n = len(vals)
     idx = np.arange(n)
     if not valid.any():
         return np.zeros(n, dtype=np.float64)
-    return np.interp(idx, idx[valid], vals[valid])
+    if not loop or n < 2:
+        return np.interp(idx, idx[valid], vals[valid])
+    vi = idx[valid]
+    vv = np.asarray(vals[valid], dtype=np.float64)
+    vi_ext = np.concatenate([vi - n, vi, vi + n])
+    vv_ext = np.concatenate([vv, vv, vv])
+    return np.interp(idx, vi_ext, vv_ext)
 
 
 def _maskvid_plan():
@@ -193,7 +202,7 @@ def _maskvid_plan():
         return None
 
 
-def _plan_zoom_crops(H, W, cx, cy, fw, sz, crop_factor, aspect):
+def _plan_zoom_crops(H, W, cx, cy, fw, sz, crop_factor, aspect, seamless_loop=False):
     """MaskVid zoomed planner: hold still, jump on cuts. Raises on failure."""
     plan = _maskvid_plan()
     if plan is None:
@@ -213,7 +222,7 @@ def _plan_zoom_crops(H, W, cx, cy, fw, sz, crop_factor, aspect):
         "zoom_step": 1.0,
         "max_zoom_rate": 0.0,
         "aspect_ratio": float(aspect),
-        "seamless_loop": False,
+        "seamless_loop": bool(seamless_loop),
     }
     planned, info = plan(binary, "zoomed", p, divisible_by=1)
     boxes = []
@@ -530,7 +539,7 @@ class H3FaceTrackCrop:
             canvas_mode, smooth_window, size_smooth_window, smooth_method, size_mode,
             select="largest", fallback_detector="none", fallback_head_frac=0.5,
             identity_reference=None, identity_threshold=0.28, identity_track=True,
-            build_crops=True):
+            build_crops=True, seamless_loop=False):
         model = _load_detector(detector)
         B, H, W, _ = images.shape
 
@@ -645,7 +654,7 @@ class H3FaceTrackCrop:
         # Body fallback for frames the face detector missed. Interpolated size feeds the
         # head-position estimate, so size comes from frames where a face WAS measured while
         # position comes from the body actually visible in this frame.
-        sz_seed = _interp_gaps(sz, valid)
+        sz_seed = _interp_gaps(sz, valid, loop=seamless_loop)
         if fallback_detector != "none" and (~valid).any():
             try:
                 bmodel = _load_detector(fallback_detector)
@@ -666,10 +675,10 @@ class H3FaceTrackCrop:
                 print(f"[H3FaceRefine] body fallback '{fallback_detector}' failed: {exc}")
 
         known = valid | via_body
-        raw_cx = _interp_gaps(cx, known)
-        raw_cy = _interp_gaps(cy, known)
-        raw_sz = _interp_gaps(sz, valid)   # size ALWAYS from real face measurements
-        raw_fw = _interp_gaps(fw, valid)
+        raw_cx = _interp_gaps(cx, known, loop=seamless_loop)
+        raw_cy = _interp_gaps(cy, known, loop=seamless_loop)
+        raw_sz = _interp_gaps(sz, valid, loop=seamless_loop)
+        raw_fw = _interp_gaps(fw, valid, loop=seamless_loop)
         if size_mode == "max_of_clip":
             raw_sz[:] = raw_sz.max()
 
@@ -700,6 +709,7 @@ class H3FaceTrackCrop:
         try:
             planned, info = _plan_zoom_crops(
                 H, W, raw_cx, raw_cy, raw_fw, raw_sz, crop_factor, aspect,
+                seamless_loop=seamless_loop,
             )
             plan_note = (
                 f"cuts from MaskVid + face jumps (planner aspect "
@@ -719,9 +729,9 @@ class H3FaceTrackCrop:
             breaks = breaks | shot_breaks_from_boxes(planned)
         boxes, cx_s, cy_s, sz_s = follow_face_boxes(
             raw_cx, raw_cy, raw_sz, crop_factor, W, H, aspect, breaks,
-            pos_window=9, size_window=15,
+            pos_window=9, size_window=15, loop=seamless_loop,
         )
-        fw_s = smooth_per_shot(raw_fw, breaks, 15, causal=True)
+        fw_s = smooth_per_shot(raw_fw, breaks, 15, causal=not seamless_loop, loop=seamless_loop)
         n_shots = int(breaks.sum())
         n_mv = int(maskvid_breaks.sum())
         plan_note = (

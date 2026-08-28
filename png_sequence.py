@@ -133,8 +133,6 @@ def require_image_ram(n_frames: int, width: int, height: int, save_to_disk=False
 
 
 def pack_image_output(images, frames_dir=None, *rest):
-    if frames_dir:
-        return pack_png_node_output(images, frames_dir, *rest)
     return {"result": (images,) + rest}
 
 
@@ -252,42 +250,3 @@ def load_png_sequence(frames_dir: str) -> torch.Tensor:
             )
         out[i] = torch.from_numpy(np.ascontiguousarray(arr)).to(dtype=torch.float32).div_(255.0)
     return out
-
-
-def png_ui_entries(frames_dir: str) -> list[dict]:
-    import folder_paths
-
-    n = png_count(frames_dir)
-    if n <= 0:
-        return []
-    abs_dir = os.path.abspath(frames_dir)
-    kind = "temp"
-    rel = os.path.basename(abs_dir)
-    for root, folder_kind in (
-        (folder_paths.get_temp_directory(), "temp"),
-        (folder_paths.get_output_directory(), "output"),
-        (folder_paths.get_input_directory(), "input"),
-    ):
-        root = os.path.abspath(root)
-        try:
-            candidate = os.path.relpath(abs_dir, root)
-        except ValueError:
-            continue
-        if candidate.startswith(".."):
-            continue
-        rel = candidate
-        kind = folder_kind
-        break
-    sub = "" if rel in (".",) else rel.replace("\\", "/")
-    return [
-        {"filename": f"{i:08d}.png", "subfolder": sub, "type": kind}
-        for i in range(n)
-    ]
-
-
-def pack_png_node_output(images, frames_dir: str, *rest):
-    entries = png_ui_entries(frames_dir)
-    payload = {"result": (images,) + rest}
-    if entries:
-        payload["ui"] = {"images": entries, "animated": (True,)}
-    return payload

@@ -16,7 +16,8 @@ from grid import (
     shot_breaks_from_tracks, smooth_per_shot, closeup_paste_gate,
     sharpness_match_amount, segment_hold, job_hold, shot_spans, hard_cut_breaks,
     overlap_freeze_scale, committed_write_span, committed_file_spans, debug_file_slice,
-    audio_mux_duration, sustained_visible, MIN_VISIBLE_SEC,
+    audio_mux_duration, sustained_visible, MIN_VISIBLE_SEC, wrap_refine_window,
+    loop_span_len,
 )
 
 
@@ -423,6 +424,108 @@ class TestSustainedVisible(unittest.TestCase):
         self.assertIn('"min_visible_sec"', text)
 
 
+class TestSeamlessLoopPack(unittest.TestCase):
+    def test_wraps_start_and_end_as_one_clip(self):
+        n = 400
+        need = np.zeros(n, dtype=bool)
+        need[:80] = True
+        need[320:] = True
+        segs = pack_refine_chunks(need, n, 243, overlap=17, loop=True)
+        loop = [s for s in segs if s[3] == "loop"]
+        self.assertEqual(len(loop), 1)
+        tail_start, head_end, grid, _kind = loop[0]
+        self.assertEqual(tail_start, 320)
+        self.assertEqual(head_end, 80)
+        self.assertEqual(loop_span_len(tail_start, head_end, n), 160)
+        self.assertEqual(grid, align_h3_frames(160))
+        covered = set()
+        for start, end, _g, kind in segs:
+            if kind == "loop":
+                covered.update(range(start, n))
+                covered.update(range(0, end))
+            else:
+                covered.update(range(start, end))
+        self.assertEqual(covered, set(range(n)))
+        self.assertFalse(any(s[3] == "refine" and (s[0] < 80 or s[1] > 320) for s in segs))
+
+    def test_loop_off_keeps_two_refine_windows(self):
+        n = 400
+        need = np.zeros(n, dtype=bool)
+        need[:80] = True
+        need[320:] = True
+        segs = pack_refine_chunks(need, n, 243, overlap=17, loop=False)
+        refine = [s for s in segs if s[3] == "refine"]
+        self.assertEqual(len(refine), 2)
+        self.assertFalse(any(s[3] == "loop" for s in segs))
+
+    def test_whole_clip_under_max_rotates_the_join(self):
+        n = 200
+        need = np.ones(n, dtype=bool)
+        segs = pack_refine_chunks(need, n, 243, overlap=17, loop=True)
+        loop = [s for s in segs if s[3] == "loop"]
+        self.assertEqual(len(loop), 1)
+        self.assertEqual(loop[0][0], 100)
+        self.assertEqual(loop[0][1], 100)
+        self.assertEqual(loop_span_len(loop[0][0], loop[0][1], n), n)
+        self.assertEqual(sum(1 for s in segs if s[3] == "refine"), 0)
+
+    def test_one_end_wraps_join_with_context(self):
+        n = 200
+        need = np.zeros(n, dtype=bool)
+        need[:80] = True
+        segs = pack_refine_chunks(need, n, 243, overlap=17, loop=True)
+        loop = [s for s in segs if s[3] == "loop"]
+        self.assertEqual(len(loop), 1)
+        tail_start, head_end, _g, _kind = loop[0]
+        self.assertEqual(head_end, 80)
+        self.assertEqual(tail_start, n - CHUNK_OVERLAP)
+        self.assertFalse(any(s[3] == "refine" and s[0] == 0 for s in segs))
+
+    def test_long_clip_straddles_join_inside_max_chunk(self):
+        n = 500
+        need = np.ones(n, dtype=bool)
+        segs = pack_refine_chunks(need, n, 243, overlap=17, loop=True)
+        loop = [s for s in segs if s[3] == "loop"]
+        self.assertEqual(len(loop), 1)
+        tail_start, head_end, grid, _kind = loop[0]
+        self.assertEqual(loop_span_len(tail_start, head_end, n), 243 - 2 * 17)
+        self.assertEqual(grid, 243)
+        self.assertLess(head_end, tail_start)
+
+    def test_adjacent_maskvid_shots_still_wrap_the_join(self):
+        n = 1020
+        need = np.ones(n, dtype=bool)
+        br = np.zeros(n, dtype=bool)
+        br[0] = True
+        br[956] = True
+        segs = pack_refine_chunks(need, n, 243, overlap=22, loop=True, breaks=br)
+        loop = [s for s in segs if s[3] == "loop"]
+        self.assertEqual(len(loop), 1)
+        tail_start, head_end, grid, _kind = loop[0]
+        self.assertEqual(loop_span_len(tail_start, head_end, n), 243 - 2 * 22)
+        self.assertEqual(grid, 243)
+        self.assertLess(head_end, tail_start)
+        self.assertFalse(any(s[3] == "refine" and s[0] == 0 for s in segs))
+        self.assertFalse(any(s[3] == "refine" and s[1] == n for s in segs))
+        refine = [s for s in segs if s[3] == "refine"]
+        self.assertEqual(refine[0][0], head_end)
+        self.assertEqual(refine[-1][1], tail_start)
+        self.assertEqual(segment_hold(segs, len(segs) - 2, 22), 22)
+
+    def test_circular_smooth_matches_at_join(self):
+        n = 40
+        vals = np.linspace(0.0, 10.0, n)
+        vals[-1] = 0.2
+        br = np.zeros(n, dtype=bool)
+        br[0] = True
+        linear = smooth_per_shot(vals, br, 9)
+        looped = smooth_per_shot(vals, br, 9, loop=True)
+        self.assertGreater(
+            abs(float(linear[0] - linear[-1])),
+            abs(float(looped[0] - looped[-1])),
+        )
+
+
 class TestCloseupWeight(unittest.TestCase):
     def test_small_face_is_full_paste(self):
         w = closeup_paste_weight([40.0], 768, 0.28)
@@ -734,6 +837,14 @@ class TestPngSequencePipeline(unittest.TestCase):
         self.assertNotIn("torchaudio.save", text)
         self.assertNotIn("dest = None if file_mode else source", text)
         self.assertIn("_source_fingerprint", text)
+        self.assertIn('RETURN_TYPES = ("IMAGE", "AUDIO", "STRING")', text)
+        self.assertIn("def _source_media_path", text)
+        self.assertIn("_empty_audio()", text)
+        self.assertIn("seamless_loop", text)
+        self.assertIn('kind == "loop"', text)
+        self.assertIn('"loop_wrap"', text)
+        self.assertIn("loop_end_latent", text)
+        self.assertIn("_freeze_overlap_video_tail", text)
 
 
 if __name__ == "__main__":

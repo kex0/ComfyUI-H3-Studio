@@ -95,6 +95,12 @@ def test_studio_nodes_warn_before_work_and_return_png_images():
     assert "save_images_to_disk=False" in face
     assert "load_png_sequence" in face
     assert "load_png_preview" not in face
+    assert 'RETURN_TYPES = ("IMAGE", "AUDIO", "STRING")' in face
+    assert 'RETURN_NAMES = ("images", "audio", "report")' in face
+    assert "out_audio = audio if audio is not None else _empty_audio()" in face
+    assert "pack_image_output(result_images, write_png_dir, out_audio, report)" in face
+    assert "def _source_media_path" in face
+    assert "_audio_from_video" in face
     assert 'get_temp_directory()' in (ROOT / "png_sequence.py").read_text(encoding="utf-8")
     assert "refined.mp4" not in face
     assert "mux_audio_onto_mp4(result" not in music_video
@@ -104,6 +110,7 @@ def test_studio_nodes_warn_before_work_and_return_png_images():
     assert '"crf"' not in auto_chain
     assert '"crf"' not in music_video
     assert "debug_videos=False" in face
+    assert "seamless_loop=False" in face
     assert "send_node_progress" in auto_chain
     assert "send_node_progress" in face
     assert "_mux_chunk" not in face
@@ -116,6 +123,24 @@ def test_studio_nodes_warn_before_work_and_return_png_images():
     assert "_source_fingerprint" in face
     assert "source_fp" in face
     assert "if images is not None:" in face
+
+
+def test_pack_image_output_has_no_node_preview():
+    ps = _load("png_sequence")
+    png = (ROOT / "png_sequence.py").read_text(encoding="utf-8")
+    face = (ROOT / "face_refine" / "video_refine.py").read_text(encoding="utf-8")
+    assert "pack_png_node_output" not in png
+    assert "png_ui_entries" not in png
+    assert '"animated"' not in png
+    assert "_send_video_preview" not in face
+    assert "_media_rel" not in face
+    assert '"animated"' not in face
+    payload = ps.pack_image_output(object(), "frames", "info")
+    assert "ui" not in payload
+    assert payload["result"][1] == "info"
+    with_audio = ps.pack_image_output(object(), "frames", {"sample_rate": 44100}, "info")
+    assert with_audio["result"][1]["sample_rate"] == 44100
+    assert with_audio["result"][2] == "info"
 
 
 def test_node_temp_frames_dir_wipes_previous_run(tmp_path):
@@ -159,3 +184,98 @@ def test_save_images_to_disk_widget_defaults_off():
     kind, opts = ps.save_images_to_disk_spec()
     assert kind == "BOOLEAN"
     assert opts["default"] is False
+
+
+def _face_refine_src():
+    return (ROOT / "face_refine" / "video_refine.py").read_text(encoding="utf-8")
+
+
+def _exec_face_slice(start_marker, end_marker, ns):
+    text = _face_refine_src()
+    start = text.index(start_marker)
+    end = text.index(end_marker, start + 1)
+    exec(text[start:end], ns)
+    return ns
+
+
+def test_audio_sidecar_prefers_song_mp4(tmp_path):
+    ns = _exec_face_slice("def _audio_sidecar(", "def _source_media_path(", {"os": os})
+    frames = tmp_path / "run_frames"
+    frames.mkdir()
+    song = tmp_path / "run_song.mp4"
+    song.write_bytes(b"song")
+    (tmp_path / "other.mp4").write_bytes(b"other")
+    got = ns["_audio_sidecar"](str(frames))
+    assert os.path.normcase(os.path.abspath(got)) == os.path.normcase(str(song.resolve()))
+
+
+def test_source_media_path_uses_video_path_file_and_png_sidecar(tmp_path):
+    ns = {"os": os}
+    _exec_face_slice("def _resolve_media_path(", "_IMAGE_EXTS = ", ns)
+    _exec_face_slice("def _audio_sidecar(", "def _empty_audio(", ns)
+    ns["_VideoFrames"] = type("VF", (), {})
+    ns["_ImageSeqFrames"] = type("IS", (), {})
+    mp4 = tmp_path / "clip.mp4"
+    mp4.write_bytes(b"muxed")
+    got = ns["_source_media_path"](object(), str(mp4))
+    assert os.path.normcase(os.path.abspath(got)) == os.path.normcase(str(mp4.resolve()))
+
+    frames = tmp_path / "clip_frames"
+    frames.mkdir()
+    seq = ns["_ImageSeqFrames"]()
+    seq.path = str(frames)
+    got = ns["_source_media_path"](seq, "")
+    assert os.path.normcase(os.path.abspath(got)) == os.path.normcase(str(mp4.resolve()))
+
+
+def test_empty_audio_is_comfy_audio_dict():
+    import torch
+    ns = _exec_face_slice("def _empty_audio(", "def _ffmpeg_exe(", {"torch": torch})
+    out = ns["_empty_audio"]()
+    assert out["sample_rate"] == 44100
+    assert tuple(out["waveform"].shape) == (1, 2, 1)
+
+
+def test_audio_from_video_loads_muxed_soundtrack(tmp_path):
+    import shutil
+    import struct
+    import subprocess
+    import wave
+
+    import pytest
+    import torch
+
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        pytest.skip("ffmpeg not on PATH")
+    png = tmp_path / "frame.png"
+    Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(png)
+    wav = tmp_path / "tone.wav"
+    sr = 44100
+    n = sr // 10
+    with wave.open(str(wav), "w") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(sr)
+        handle.writeframes(struct.pack("<" + "h" * n, *([8000] * n)))
+    mp4 = tmp_path / "clip.mp4"
+    r = subprocess.run(
+        [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-loop", "1", "-t", "0.2", "-i", str(png), "-i", str(wav),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+            "-shortest", str(mp4),
+        ],
+        capture_output=True, text=True, check=False,
+    )
+    if r.returncode != 0:
+        pytest.skip(r.stderr[-400:] if r.stderr else "ffmpeg mux failed")
+    ns = {
+        "os": os, "shutil": shutil, "subprocess": subprocess,
+        "wave": wave, "np": np, "torch": torch,
+    }
+    _exec_face_slice("def _ffmpeg_exe(", "class _ImageSeqFrames", ns)
+    _exec_face_slice("def _audio_from_video(", "def _progress(", ns)
+    out = ns["_audio_from_video"](str(mp4), str(tmp_path / "out.wav"))
+    assert int(out["sample_rate"]) == 44100
+    assert int(out["waveform"].shape[-1]) > 1000
