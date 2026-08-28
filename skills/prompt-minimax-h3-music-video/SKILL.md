@@ -5,13 +5,14 @@ description: >-
   workspace .txt file (link in chat; never paste the full doc) from a Builder
   skill command that includes the song path and lyrics. Use when the user
   invokes /prompt_minimax_h3_music_video, /prompt-minimax-h3-music-video, or
-  asks for H3 Infinite music-video / lipsync-to-song clip prompts.
+  asks for H3 Studio music-video / lipsync-to-song clip prompts. Expands a
+  short visual plan into timed, filmable shot descriptions.
 disable-model-invocation: true
 ---
 
 # MiniMax H3 Music Video Prompts
 
-The prompt document is parsed by ComfyUI **H3 Studio - Music Video**. CLIP math and wav2vec2 letter refine run in the user's **running ComfyUI** (H3 Studio). This skill does not install torch, WhisperX, Parakeet, or Demucs. Do **not** transcribe: lyrics come from the user prompt / Builder dump. Generating video still needs that node in Comfy. Clip 1 is **Ref2VA** (six-section body) plus the first song slice as `<Audio 1>`. If a Builder dump Picture line ends with ` (first frame)`, that still is MiniMax's first image for CLIP 1 (hybrid FL2VA start + Ref2VA identity). Later clips Continue **video** from the previous AV latent with the **next song slice** as `<Audio 1>` and the pictures that CLIP cites. Final soundtrack is the original song (muxed). Do not use Auto Chain or `/prompt_minimax_h3_infinite` for this. Unmarked stills are not first-frame locks. Do not write T2VA `at 0.00 seconds … is fully referenced`.
+The prompt document is parsed by ComfyUI **H3 Studio - Music Video**. CLIP math and wav2vec2 letter refine run in the user's **running ComfyUI** (H3 Studio). This skill does not install torch, WhisperX, Parakeet, or Demucs. Do **not** transcribe: lyrics come from the user prompt / Builder dump. Generating video still needs that node in Comfy. Clip 1 is **Ref2VA** (six-section body) plus the first song slice as `<Audio 1>`. If a Builder dump Picture line ends with ` (first frame)`, that still is MiniMax's first image for CLIP 1 (hybrid FL2VA start + Ref2VA identity). Later clips Continue **video** from the previous AV latent with the **next song slice** as `<Audio 1>` and the pictures that CLIP cites. Final soundtrack is the original song (muxed). Do not use Auto Chain or `/prompt-minimax-h3-auto_chain` for this. Unmarked stills are not first-frame locks. Do not write T2VA `at 0.00 seconds … is fully referenced`.
 
 Paste the finished file into the node's single `prompt` field. Each CLIP's `subject_definitions` cites the dump labels that CLIP loads.
 
@@ -19,7 +20,7 @@ When the user pastes an **H3 Studio Builder dump**, wire **Builder → Music Vid
 
 **Per-CLIP pack selection (Advanced):** write the dump labels that CLIP still uses (`<Picture 3>`, `<Video 1>`, `<Model 2>`) in **that CLIP's** `subject_definitions`. Identity stills that still apply must be cited (one identity Picture belongs in every CLIP). The node loads **exactly those** Picture / Video / builder-Audio items and remaps them to contiguous H3 ordinals before tokenize. `<Audio 1>` is always the song slice and does **not** count as a builder-audio citation. Do not cite unused extra stills on every CLIP.
 
-Single-clip Ref2VA stays on `prompt-minimax-h3`. Auto Chain continuation stays on `prompt-minimax-h3-infinite`.
+Single-clip Ref2VA stays on `prompt-minimax-h3`. Auto Chain continuation stays on `prompt-minimax-h3-auto_chain`.
 
 ## When invoked
 
@@ -49,7 +50,7 @@ plan:
 neon karaoke booth, medium close-up; keep the same singer
 ```
 
-If the dump includes `duration:`, use it as the max clip length unless the user also passed `Ns`. If it includes a `plan:` block, that is the visual plan. Builder Music Video mode omits audio refs (the song is `<Audio 1>`). If a dump still lists `Audio N`, those are Builder audios and become prompt `<Audio 2>`+. Wire Builder `duration` into Music Video.
+If the dump includes `duration:`, use it as the max clip length unless the user also passed `Ns`. If it includes a `plan:` block, that is visual **intent**. Expand it into filmable shots (see **Expand the plan**). Builder Music Video mode omits audio refs (the song is `<Audio 1>`). If a dump still lists `Audio N`, those are Builder audios and become prompt `<Audio 2>`+. Wire Builder `duration` into Music Video.
 
 `Picture N: … (first frame)` means CLIP 1 Shot 1 must match that still (crop, pose, wardrobe, place). Cite it as `<Picture N>` for identity too. CLIP 2+ continues from the previous ending, not from that still. Unmarked pictures stay identity/style refs only.
 
@@ -207,6 +208,28 @@ Load [templates.md](templates.md) for sung vs instrumental bodies. Base structur
 - Identity/wardrobe for a CLIP come from the pictures that CLIP cites in `subject_definitions`. Do not stamp every attached still onto every CLIP. A later CLIP may cite a different dump still when the plan changes identity or look.
 - Do not write last-frame landings or freeze poses.
 
+## Expand the plan
+
+The Builder `plan:` is a brief. H3 will not invent a music video from `medium close-up in a booth` or `she performs the song`. After fill, you replace every CLIP `detailed_description` with a shot list a DP could follow. Lyrics, `time:`, and `<d>` strings stay locked; **picture and blocking do not stay vague**.
+
+Stay faithful to the plan's world, identity, crop, and VFX intent. Expand **how it looks**. Do not add people, props, or inventory the user did not supply. Do not leave the filler scaffold take.
+
+### Convert vague language
+
+| Plan says | You write |
+|-----------|-----------|
+| `in a neon booth` / `on a street` | A dressed set: time of day, practical lights, walls/floor, weather, extras or none, depth behind the singer. |
+| `performs` / `sings` / `moves with the music` | Body: weight, hands (mic at mouth **or** empty — committed for that shot), shoulders, head, eyeline, steps. Place each `<d>` in a shot that is on-camera for that line's clock. |
+| `the space becomes` / `environment changes` | Only after `At mm:ss.sss, the camera cuts`. The new shot opens already in the new dressed world. Never morph or fade the room mid-shot. |
+| `VFX` / `glitch` / `reality-bends` / `transforms` | A visible mechanism with a start and end inside that shot: what happens to the set, light, and the subject's edges. Duration in clocks relative to `slice:`. No unnamed “effect”. |
+| `looks around` / `emotional` | Concrete face and body beats at lyric clocks. |
+
+**Fail:** ` [Shot 1] <Subject 1> sings in a neon karaoke booth, cinematic, medium close-up. `
+
+**Pass:** `[Shot 1] Knees-up in a cramped karaoke booth: vinyl bench, two hanging LED bars, a dark glass wall with the tracklist reflected, no extras. Handheld camera holds <Subject 1> (S1). <Subject 1> (S1) holds a wireless mic at the mouth with the right hand; the left braces the bench. Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] I been waiting in the dark</d>. [Shot 2] At 00:04.200, the camera cuts. Wet night street, sodium lamps, rain on the jacket, traffic bokeh behind <Subject 1> (S1). Empty hands; the mic is gone. <Subject 1> (S1) steps toward camera on the beat. Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] next line</d>.`
+
+If the plan asked for VFX, describe the event (the booth glass spiderwebs and the cracks become rain-streaked street neon) — do not write `a reality-bending effect`.
+
 ## Audio / lipsync (every clip)
 
 - `<Audio 1>` is **this clip's song slice** (the node feeds a full generate-length slice starting `head` frames before the previous kept end). Copy the skeleton `audio:` range into the covering line. Prompt every skeleton lyric that overlaps that `audio:` span. Do not invent stamps; copy them from the **post-confirm** skeleton.
@@ -230,7 +253,7 @@ python scripts/fill_prompt_bodies.py "song.skeleton.txt" -o "Prompting/<stem>-mu
 
 **This invocation only.** Do not reuse `--fx` or a previous `.h3.txt` from another song or an earlier chat. Omit `--picture1` / `--opening` when unused. `--picture1` may stamp the same still onto every CLIP body; the director pass must rewrite **each CLIP's** `subject_definitions` so it cites only the dump stills that CLIP needs. Pass `--fx` only if this song asked for a named treatment (it goes in the style sentence once). Do **not** pass `--portrait occasional`. Do **not** create a new splice script. Do **not** pass `--worlds` / `--actions`.
 
-4. **Direct the video.** Replace each CLIP `summary`, `detailed_description`, and `subject_definitions`. Plan the whole song as one music video: verse / pre-chorus / chorus / bridge / outro environments, when the mic is in the shot, when the body is dancing empty-handed, where the close-ups land, and where 2D/3D VFX hit. Decide **which dump stills each CLIP cites**. Then write shots that are timed to the lyric clocks.
+4. **Direct the video.** Replace each CLIP `summary`, `detailed_description`, and `subject_definitions`. The filler take is illegal output. Plan the whole song as one music video: verse / pre-chorus / chorus / bridge / outro **dressed** environments, when the mic is in the shot, when the body is dancing empty-handed, where the close-ups land, and where VFX hit as visible events with clocks. Decide **which dump stills each CLIP cites**. Then write shots timed to the lyric clocks. Every shot must name crop, camera, body, set, and light. If a sentence could have come from the plan unchanged, rewrite it.
 
    Hard locks — do not change these:
    - `time:`, `duration_seconds:`, `slice:`, `audio:`, and `lyrics:` under each `## Clip`
@@ -247,7 +270,7 @@ python scripts/fill_prompt_bodies.py "song.skeleton.txt" -o "Prompting/<stem>-mu
    - Occasional face close-up on a sung shot when asked — not on every line, not from `--portrait occasional`.
    - Never write `sometimes` / `X or Y` / `|` roulette. Never write `The space becomes`.
 
-5. Self-check: output `lyrics:` blobs match the **post-confirm** skeleton; every sung skeleton `[stamp]` appears in that CLIP's `<d>` (do not sing `<instrumental>` — that stamp stays a closed-lip camera cut at the relative clock); held `~word~` marks may expand inside `<d>` only; a short CLIP with one lyric plus `<instrumental>` keeps that rest cut and is not even-split into four filler shots; six Ref2VA sections with colons; pictures cited inside `<Subject 1>` except CLIP 1's dump `(first frame)` still, which also gets a first-frame Picture row; CLIP 1 Shot 1 matches that still when marked; CLIP 2+ does not reopen on it; no T2VA `at 0.00 seconds … first frame of [Shot 1] is fully referenced`; no extra score; **no** `sometimes` / `X or Y` action hedges; no microphone unless this invocation asked for it; no environment change without `the camera cuts`.
+5. Self-check: output `lyrics:` blobs match the **post-confirm** skeleton; every sung skeleton `[stamp]` appears in that CLIP's `<d>` (do not sing `<instrumental>` — that stamp stays a closed-lip camera cut at the relative clock); held `~word~` marks may expand inside `<d>` only; a short CLIP with one lyric plus `<instrumental>` keeps that rest cut and is not even-split into four filler shots; six Ref2VA sections with colons; pictures cited inside `<Subject 1>` except CLIP 1's dump `(first frame)` still, which also gets a first-frame Picture row; CLIP 1 Shot 1 matches that still when marked; CLIP 2+ does not reopen on it; no T2VA `at 0.00 seconds … first frame of [Shot 1] is fully referenced`; no extra score; **no** `sometimes` / `X or Y` action hedges; no microphone unless this invocation asked for it; no environment change without `the camera cuts`; no `every few seconds` / `reality-bends` / `the space becomes` / `cinematic medium close-up` leftover from the plan.
 6. Reply with the file path/link (and optionally `clip_count` / `max_duration_seconds`). Never paste the full prompt document into chat.
 
 ## Shared H3 rules

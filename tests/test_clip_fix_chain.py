@@ -187,7 +187,7 @@ def test_clip_fixer_nodes_registered_and_documented():
     assert 'drop=("resume_from_clip", "stop_after_clip", "duration", "segments", "seamless_loop")' in fixer
     assert 'drop=("resume_from_clip", "duration", "segments", "seamless_loop")' in fixer
     assert 'mode == "per_clip" and kwargs.get("duration")' not in fixer
-    assert "Duration, clip count, and loop are read from the prompt." in fixer
+    assert "Only changes how the prompt is shown. It does not affect generation." in fixer
     assert "clip_fix" in mv
     assert 'not kwargs.get("clip_fix")' in mv
 

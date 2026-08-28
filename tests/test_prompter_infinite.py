@@ -194,6 +194,7 @@ def test_generate_clip_bodies_labels_and_repair(monkeypatch):
     assert "<Subject 2> is the night street" not in clip2
     turn = prompter._user_turn(inventory, "she walks", 2, "Finish", 10.0, "")
     assert "this clip's subject_definitions" in turn
+    assert "Expand this clip's share of the plan" in turn
 
 
 def test_dump_from_pack_and_loop_label():
@@ -298,6 +299,9 @@ def test_init_mapping_and_docs():
     assert "Do not copy unused extra dump stills" in system
     assert "at 0.00 seconds" in system
     assert "first frame of [Shot 1]" in system
+    assert "## Expand the plan" in system
+    assert "visible physics" in system
+    assert "Do not invent a walking-morph, reality-bend, or footsteps story" not in system
 
 
 def test_music_video_pack_inputs_and_locked_d():
@@ -359,6 +363,8 @@ def test_generate_music_video_bodies_locks_lyrics():
     assert "[00:01.000-00:04.000] hello world" in captured[0]
     assert "<d>[English] hello world</d>" in captured[0]
     assert "this clip's subject_definitions" in captured[0]
+    assert "slice: 0.000" in captured[0]
+    assert "Shot clocks are clip-relative" in captured[0]
     assert notes == []
     assert bodies[0]["lyrics"] == lyrics
     document = _load("prompt_document").assemble_music_video_document(10.125, bodies)
@@ -368,6 +374,9 @@ def test_generate_music_video_bodies_locks_lyrics():
     assert "<d>[English] hello world</d>" in document
     mv_system = (ROOT / "prompts" / "music_video_system.txt").read_text(encoding="utf-8")
     assert "source-song slice" in mv_system
+    assert "## Expand the plan" in mv_system
+    assert "the camera cuts" in mv_system
+    assert "Do not invent a walking-morph, reality-bend, or footsteps story" not in mv_system
     node = (ROOT / "prompter_infinite.py").read_text(encoding="utf-8")
     assert "assemble_music_video_document" in node
     assert "refine_confirm_lyrics" in node
@@ -496,7 +505,7 @@ def test_clip_fix_rewrites_selected_indices_only():
     assert "Seed clip one." in turn
     assert "Following clip (do not rewrite; land so this body can continue):" in turn
     assert "Seed clip three." in turn
-    assert "Apply the user plan." in turn
+    assert "Apply the user plan as filmable beats" in turn
     assert bodies[0]["prompt"] == SEED_BODY_1
     assert bodies[2]["prompt"] == SEED_BODY_3
     assert "REWRITTEN clip two" in bodies[1]["prompt"]

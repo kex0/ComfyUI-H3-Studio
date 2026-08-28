@@ -301,7 +301,8 @@ def _rewrite_addendum(existing_body="", following_body="") -> list[str]:
             "",
             "Existing clip body to revise:",
             str(existing_body).rstrip(),
-            "Apply the user plan. Do not rewrite lyrics wording, time:, audio:, or locked dialogue tags.",
+            "Apply the user plan as filmable beats (crop, body, dressed set, light), not a paraphrase. "
+            "Do not rewrite lyrics wording, time:, audio:, or locked dialogue tags.",
         ])
     if following_body:
         parts.extend([
@@ -385,9 +386,11 @@ def _mv_user_turn(inventory, plan, clip, previous_body, existing_body="",
         "",
         job,
         "Choose which dump Picture / Video / Model this clip needs. Identity stills that still apply must appear as <Picture N> in this clip's subject_definitions (inside the Subject line). If the dump has one identity Picture, every clip cites it. Omit unused extra stills.",
+        "Expand this clip's picture and blocking. Shot clocks are clip-relative: 0.00 is this generate start (slice). Subtract slice from song lyric stamps for At mm:ss.sss. Place each <d> in a shot covering that line. Do not leave the plan's crop or place words as the whole shot.",
         "",
         "Locked CLIP headers (do not rewrite lyrics wording):",
         f"time: {t0:.3f}-{t1:.3f}",
+        f"slice: {float(clip.get('slice', a0)):.3f}",
         f"audio: {a0:.3f}-{a1:.3f}",
         "lyrics:",
         lyrics,
@@ -433,6 +436,7 @@ def _user_turn(inventory, plan, index, role, duration, previous_body, is_loop=Fa
         "",
         job,
         "Choose which dump Picture / Video / Audio this clip needs. Identity stills that still apply must appear as <Picture N> in this clip's subject_definitions (inside the Subject line). If the dump has one identity Picture, every clip cites it. Omit unused extra stills.",
+        "Expand this clip's share of the plan into filmable beats (crop, body, dressed set, light). Use At mm:ss.sss from this clip's 0.00. Do not repeat plan slang such as every few seconds, reality-bends, or looks around.",
     ]
     if is_loop:
         parts.append(

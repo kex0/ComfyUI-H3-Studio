@@ -34,9 +34,7 @@ def with_clip_index(spec, *, drop=()):
         optional["prompt_mode"] = (["single", "per_clip"], {
             "default": "single",
             "tooltip": (
-                "single: one H3 Studio prompt with ## Clip sections. "
-                "per_clip: one editor per ## Clip in the prompt. "
-                "Duration, clip count, and loop are read from the prompt."
+                "Only changes how the prompt is shown. It does not affect generation."
             ),
         })
     out = {}

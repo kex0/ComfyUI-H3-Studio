@@ -24,6 +24,10 @@ def test_every_h3_node_has_usage_guide():
     for name, text in NODE_HELP.items():
         assert text.startswith("## "), name
         assert "1." in text, name
+    face = NODE_HELP["H3StudioFaceRefineVideo"]
+    assert "second output is AUDIO" in face
+    assert "video_path" in face
+    assert "seamless loop" in face
     lyrics = NODE_HELP["H3StudioLoadSong"]
     assert "Paste lyrics" in lyrics
     assert "Upload your song" in lyrics
@@ -35,6 +39,7 @@ def test_every_h3_node_has_usage_guide():
     assert "without H3" not in prompter
     assert "Music Video" in prompter
     assert "Auto Chain" in prompter
+    assert "filmable clip bodies" in prompter
     builder = NODE_HELP["H3StudioBuilder"]
     assert "Copy skill command" in builder
     assert "Skill slash" not in builder
@@ -45,11 +50,18 @@ def test_every_h3_node_has_usage_guide():
     assert "/prompt-minimax-h3-clip-fix" in fixer
     assert "cursor.com/docs/context/skills" in fixer
     assert (ROOT / "skills" / "prompt-minimax-h3-clip-fix" / "SKILL.md").is_file()
-    assert (ROOT / "skills" / "prompt-minimax-h3-infinite" / "SKILL.md").is_file()
+    assert (ROOT / "skills" / "prompt-minimax-h3-auto_chain" / "SKILL.md").is_file()
+    ac_skill = (ROOT / "skills" / "prompt-minimax-h3-auto_chain" / "SKILL.md").read_text(encoding="utf-8")
+    assert "## Expand the plan" in ac_skill
+    assert "/prompt-minimax-h3-auto_chain" in ac_skill
+    assert "/prompt-minimax-h3-infinite" not in ac_skill
+    assert "Follow **the user's plan**" not in ac_skill
     mv_skill = (ROOT / "skills" / "prompt-minimax-h3-music-video" / "SKILL.md").read_text(encoding="utf-8")
     assert (ROOT / "skills" / "prompt-minimax-h3-music-video" / "SKILL.md").is_file()
     assert (ROOT / "skills" / "prompt-minimax-h3-music-video" / "scripts" / "fill_prompt_bodies.py").is_file()
     assert "/h3_studio_song/plan" in mv_skill
+    assert "## Expand the plan" in mv_skill
+    assert "The filler take is illegal output." in mv_skill
     assert "fill_prompt_bodies.py" in mv_skill
     assert "song.confirm.words.json" in mv_skill
     assert "Do **not** transcribe" in mv_skill or "do **not** transcribe" in mv_skill

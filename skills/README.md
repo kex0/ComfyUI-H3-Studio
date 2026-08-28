@@ -5,7 +5,7 @@ These skills write or rewrite MiniMax H3 Studio prompts in Cursor, Claude Code, 
 | Skill | Slash | Use with |
 |---|---|---|
 | `prompt-minimax-h3-music-video` | `/prompt-minimax-h3-music-video` | Builder **Copy skill command** (Music Video mode) |
-| `prompt-minimax-h3-infinite` | `/prompt-minimax-h3-infinite` | Builder **Copy skill command** (Auto Chain mode) |
+| `prompt-minimax-h3-auto_chain` | `/prompt-minimax-h3-auto_chain` | Builder **Copy skill command** (Auto Chain mode) |
 | `prompt-minimax-h3-clip-fix` | `/prompt-minimax-h3-clip-fix` | Clip Prompt Fixer **Copy skill command** |
 
 Copy each folder into your agent's skills directory, then paste the copied command from the node.

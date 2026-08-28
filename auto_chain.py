@@ -333,8 +333,7 @@ class H3StudioAutoChain:
         optional["prompt_mode"] = (["single", "per_clip"], {
             "default": "single",
             "tooltip": (
-                "single: one H3 Studio prompt with ## Clip sections. "
-                "per_clip: duration, segments, and seamless_loop widgets plus one prompt per clip."
+                "Only changes how the prompt is shown. It does not affect generation."
             ),
         })
         return {

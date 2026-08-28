@@ -11,11 +11,11 @@ disable-model-invocation: true
 
 # MiniMax H3 Clip Prompt Fix
 
-Revise **only the selected clip bodies** in a finished H3 Studio prompt. This is the agent-side twin of Comfy **H3 Studio - Clip Prompt Fixer**. Do not regenerate the whole song. Do not run music-video transcribe / fill scripts. Do not use `/prompt-minimax-h3-music-video` or `/prompt-minimax-h3-infinite` (those write a new document from scratch).
+Revise **only the selected clip bodies** in a finished H3 Studio prompt. This is the agent-side twin of Comfy **H3 Studio - Clip Prompt Fixer**. Do not regenerate the whole song. Do not run music-video transcribe / fill scripts. Do not use `/prompt-minimax-h3-music-video` or `/prompt-minimax-h3-auto_chain` (those write a new document from scratch).
 
 Paste the result back into Music Video / Auto Chain `prompt` (or the Fixer's `original_prompt` for another pass).
 
-Load [prompt-minimax-h3/reference-ref2va.md](../prompt-minimax-h3/reference-ref2va.md) for the six-section contract. For Music Video seeds also load [prompt-minimax-h3-music-video/templates.md](../prompt-minimax-h3-music-video/templates.md). For Auto Chain seeds load [prompt-minimax-h3-infinite/templates.md](../prompt-minimax-h3-infinite/templates.md).
+Load [prompt-minimax-h3/reference-ref2va.md](../prompt-minimax-h3/reference-ref2va.md) for the six-section contract. For Music Video seeds also load [prompt-minimax-h3-music-video/templates.md](../prompt-minimax-h3-music-video/templates.md). For Auto Chain seeds load [prompt-minimax-h3-auto_chain/templates.md](../prompt-minimax-h3-auto_chain/templates.md).
 
 ## When invoked
 
@@ -75,7 +75,7 @@ Rewrite **only** the six Ref2VA sections (`subject_definitions` through `non_die
 1. Detect Music Video vs Auto Chain from the seed (`mode:`, or `time:` / `lyrics:` present).
 2. Resolve targets: explicit `clip_index`, or every story clip in a partial paste. Error if an index is missing from the paste.
 3. **Not selected:** do not include that clip in the output. If a neighbor body is in the paste, you may read it for continuity, but do not emit it.
-4. **Selected:** rewrite the six-section body to apply the plan. Keep the seed clip index in the heading (`## Clip 11 — Continue`).
+4. **Selected:** rewrite the six-section body to apply the plan. Expand vague plan language into timed visible action (dressed sets, body, camera, VFX mechanism) the same way the Auto Chain / Music Video skills do — do not paraphrase `darker` / `more energy` without saying what the frame shows. Keep the seed clip index in the heading (`## Clip 11 — Continue`).
 5. Keep dump citations legal. Identity stills that still apply stay inside `<Subject N>`. CLIP 1 may keep a standalone `<Picture N> is the first frame of [Shot 1]` row when the dump marks that still. Continue/Finish must not reopen that row.
 6. Music Video: keep `<Audio 1>` covering the seed `audio:` range; `retention_analysis` still `fully_copy` that slice; `non_diegetic_music: N/A`; do not add a second score. Sung lines stay in sync with the locked `<d>` tags.
 7. Do not write T2VA `at 0.00 seconds … fully referenced`.

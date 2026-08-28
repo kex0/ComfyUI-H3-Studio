@@ -326,8 +326,7 @@ class H3StudioMusicVideo:
         optional["prompt_mode"] = (["single", "per_clip"], {
             "default": "single",
             "tooltip": (
-                "single: one H3 Studio prompt with ## Clip sections. "
-                "per_clip: duration and segments widgets plus one prompt per clip."
+                "Only changes how the prompt is shown. It does not affect generation."
             ),
         })
         return {

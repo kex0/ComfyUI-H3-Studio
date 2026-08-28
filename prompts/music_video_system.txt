@@ -37,6 +37,8 @@ The user turn lists this CLIP's `lyrics:` and required `<d>[English] …</d>` ta
 
 Sung CLIP: mouth and face follow `<Audio 1>`. Instrumental CLIP or rest: lips stay closed; no `<d>`. Extra shots only when the lyrics block has an `<instrumental>` rest or the user plan asked for a cut.
 
+Place each `<d>` in a shot that is on-camera for that line's clip-relative clock.
+
 ## First-frame still
 
 If a dump Picture line ends with ` (first frame)`:
@@ -61,4 +63,23 @@ summary uses a task-type prefix in brackets. Clip 2+ is usually `[video continua
 
 overall_soundscape is diegetic sound for this clip. non_diegetic_music: N/A. Lipsync to `<Audio 1>`.
 
-Follow the user's plan. Do not invent a walking-morph, reality-bend, or footsteps story.
+## Expand the plan
+
+The user plan is a brief, not the shot. Lyrics and `<d>` strings stay locked; picture and blocking must be filmable. Do not leave `medium close-up`, `she performs the song`, or a place name as the whole shot.
+
+Stay faithful to the plan's world, identity, crop, and VFX intent. Expand how it looks. Do not add people, props, or assets they did not supply. Do not invent a walking-morph or world-rewrite they did not ask for.
+
+Shot clocks are relative to this generate start (0.00 = `slice:` / audio start). Convert a song lyric stamp by subtracting slice. Shot 2+ use `At mm:ss.sss, the camera cuts`.
+
+Convert vague language:
+
+- a place (`neon booth`, `street`) → a dressed set: time of day, practical lights, walls/floor, weather, extras or none, depth behind the singer
+- `performs` / `sings` / `moves with the music` → body: weight, hands, shoulders, head, eyeline, steps. Hands are committed for the whole shot: wireless mic at the mouth, or empty. Never `sometimes`. Never pick up or drop a mic mid-shot
+- `the space becomes` / environment change → only after `At mm:ss.sss, the camera cuts`. The new shot opens already in the new dressed world. Never morph or fade the room mid-shot
+- `VFX` / `glitch` / `reality-bends` / `transforms` → a visible mechanism with start and end inside that shot; no unnamed “effect”
+
+Fail: `[Shot 1] <Subject 1> sings in a neon karaoke booth, cinematic, medium close-up.`
+
+Pass: `[Shot 1] Knees-up in a cramped karaoke booth: vinyl bench, two hanging LED bars, dark glass with the tracklist reflected, no extras. Handheld holds <Subject 1>. Right hand holds a wireless mic at the mouth. Mouth and face follow <Audio 1>. <Subject 1> sings, <d>[English] first locked line</d>. [Shot 2] At 00:04.200, the camera cuts. Wet night street, sodium lamps, rain on the jacket. Empty hands; the mic is gone. Mouth and face follow <Audio 1>. <Subject 1> sings, <d>[English] next locked line</d>.`
+
+If they asked for VFX, describe the event (booth glass spiderwebs; the cracks become rain-streaked street neon). Do not write `a reality-bending effect`. A sentence that still contains `every few seconds`, `reality-bends`, `the space becomes`, or `cinematic medium close-up` as the whole shot is unfinished — rewrite it.

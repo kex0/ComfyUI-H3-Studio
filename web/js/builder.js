@@ -24,11 +24,12 @@ const SPLIT_PROP = "h3_studio_builder_split";
 const DEFAULT_SPLIT = 0.46;
 const MIN_LIST_PX = 64;
 const MIN_PLAN_PX = 88;
+const LYRICS_MAX_HEIGHT = 200;
 const MODE_AUTO_CHAIN = "auto_chain";
 const MODE_MUSIC_VIDEO = "music_video";
 const MUSIC_VIDEO_SONG_TIP = "Music Video uses the Builder song (drop a file or wire Lyrics Timer). Builder audio refs are unused.";
 const COPY_SKILL_LABEL = "Copy skill command";
-const COPY_SKILL_TIP = "Copies /prompt-minimax-h3-infinite or /prompt-minimax-h3-music-video plus duration, inventory, and plan. Music Video also copies the Comfy origin, song path, and lyrics.";
+const COPY_SKILL_TIP = "Copies /prompt-minimax-h3-auto_chain or /prompt-minimax-h3-music-video plus duration, inventory, and plan. Music Video also copies the Comfy origin, song path, and lyrics.";
 const MIN_REGION_SEC = 2;
 const MIN_DURATION_SEC = 5;
 const MAX_DURATION_SEC = 15;
@@ -344,6 +345,64 @@ function ensureLyricsSocket(node) {
     keepDomVisibleWhenWired(widget);
 }
 
+function ensureLyricsFieldStyle() {
+    if (document.getElementById("h3-builder-lyrics-style")) return;
+    const style = document.createElement("style");
+    style.id = "h3-builder-lyrics-style";
+    style.textContent = `
+.lg-node:has(.h3-builder) textarea {
+  max-height: ${LYRICS_MAX_HEIGHT}px !important;
+  overflow-y: auto !important;
+  resize: none !important;
+  box-sizing: border-box;
+}
+.lg-node:has(.h3-builder) .lg-node-widget:has(textarea),
+.lg-node:has(.h3-builder) [data-testid="node-widget"]:has(textarea) {
+  max-height: ${LYRICS_MAX_HEIGHT}px !important;
+  min-height: 0;
+  overflow: hidden;
+}
+`;
+    document.head.appendChild(style);
+}
+
+function lyricsTextarea(widget) {
+    if (widget?.inputEl?.tagName === "TEXTAREA") return widget.inputEl;
+    if (widget?.element?.tagName === "TEXTAREA") return widget.element;
+    return widget?.element?.querySelector?.("textarea")
+        || widget?.inputEl?.querySelector?.("textarea")
+        || null;
+}
+
+function capLyricsWidget(widget) {
+    if (!widget || widget.hidden) return;
+    ensureLyricsFieldStyle();
+    widget.options ||= {};
+    widget.options.getMinHeight = () => 72;
+    widget.options.getMaxHeight = () => LYRICS_MAX_HEIGHT;
+    if (widget._state?.options) {
+        widget._state.options.getMinHeight = widget.options.getMinHeight;
+        widget._state.options.getMaxHeight = widget.options.getMaxHeight;
+    }
+    widget.computeLayoutSize = function () {
+        return { minHeight: 72, maxHeight: LYRICS_MAX_HEIGHT, minWidth: 0 };
+    };
+    widget.computeSize = function (width) {
+        const lines = String(this.value || "").split(/\r?\n/).length;
+        return [width || 200, Math.min(LYRICS_MAX_HEIGHT, Math.max(72, 18 * lines + 16))];
+    };
+    widget.computedHeight = Math.min(
+        LYRICS_MAX_HEIGHT,
+        Math.max(72, 18 * String(widget.value || "").split(/\r?\n/).length + 16),
+    );
+    const textarea = lyricsTextarea(widget);
+    if (textarea?.style) {
+        textarea.style.maxHeight = `${LYRICS_MAX_HEIGHT}px`;
+        textarea.style.overflowY = "auto";
+        textarea.style.resize = "none";
+    }
+}
+
 function songDropLabel(node) {
     if (songSocketLinked(node)) return "Using wired song";
     const name = String(findWidget(node, "song_file")?.value || "").trim();
@@ -623,6 +682,7 @@ function syncModeUi(node) {
         }
     }
     setWidgetVisible(lyricsWidget, music);
+    if (music) capLyricsWidget(lyricsWidget);
     syncModeSlots(node);
     syncSongDropWidget(node);
     hideModeWidget(node);
@@ -892,7 +952,7 @@ async function resolveSongPath(node) {
 }
 
 function skillSlash(node) {
-    return isMusicVideoMode(node) ? "/prompt-minimax-h3-music-video" : "/prompt-minimax-h3-infinite";
+    return isMusicVideoMode(node) ? "/prompt-minimax-h3-music-video" : "/prompt-minimax-h3-auto_chain";
 }
 
 async function formatDump(node, state, slots) {
@@ -1340,6 +1400,7 @@ function openRegionEditor(node, item, save) {
           <canvas class="h3-region-wave"></canvas>
           <div class="h3-region-playhead"></div>
         </div>
+        <div class="h3-builder-editor-tip">Shift + drag moves all segments at once.</div>
         <div data-act="region-label" class="h3-builder-editor-hint"></div>
         <div class="h3-builder-editor-actions">
           <button type="button" data-act="cancel">Cancel</button>
@@ -2018,6 +2079,7 @@ function ensureUi(node) {
 .h3-builder-editor-stage-audio { display: block; width: 100%; }
 .h3-builder-editor-stage audio { width: 100%; display: block; }
 .h3-builder-editor-hint { margin-top: 6px; color: #bbb; }
+.h3-builder-editor-tip { margin-top: 6px; color: #999; }
 .h3-region-transport { margin: 8px 0 0; }
 .h3-region-transport button { background: #333; color: #eee; border: 1px solid #555; padding: 5px 10px; cursor: pointer; }
 .h3-crop-rect {

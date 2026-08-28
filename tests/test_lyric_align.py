@@ -135,7 +135,12 @@ def test_load_song_align_wiring():
     assert "function syncFromWidgets()" in js
     assert "function audioFilename()" in js
     assert "syncFromWidgets();" in js
-    assert 'chainCallback(node, "onConfigure"' in js
+    assert "function setAudioCombo" in js
+    assert "function uploadedAudioName" in js
+    assert "function applyUploadedAudio" in js
+    assert "setAudioCombo(node, widget, name)" in js
+    assert "widget._state.options.values = values" in js
+    assert "fileInput.value = \"\"" in js
 
 
 def test_apply_line_refine_keeps_confirm_stamps():

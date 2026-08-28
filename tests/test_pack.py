@@ -298,6 +298,10 @@ def test_format_builder_dump_enabled_labels():
     assert 'addDOMWidget("song"' in builder_js
     assert "Drop song or click to upload" in builder_js
     assert "setWidgetVisible(lyricsWidget, music)" in builder_js
+    assert "LYRICS_MAX_HEIGHT = 200" in builder_js
+    assert "function capLyricsWidget" in builder_js
+    assert "capLyricsWidget(lyricsWidget)" in builder_js
+    assert "max-height: ${LYRICS_MAX_HEIGHT}px !important" in builder_js
     assert "SERIAL_WIDGETS" in builder_js
     assert '"max_clip_duration", "segments", "loop", "song_file", "lyrics"' in builder_js
     assert "function decodeWidgetsValues(values)" in builder_js
@@ -450,7 +454,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "copy-info" not in builder_js
     assert "include_skill" not in builder_js
     assert "h3-builder-switch" not in builder_js
-    assert "/prompt-minimax-h3-infinite" in builder_js
+    assert "/prompt-minimax-h3-auto_chain" in builder_js
+    assert "/prompt-minimax-h3-infinite" not in builder_js
     assert "/prompt-minimax-h3-music-video" in builder_js
     assert "skillSlash" in builder_js
     assert "/h3_studio_song/path" in builder_js
@@ -481,6 +486,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "unusedTitle" in builder_js
     assert "openCropEditor" in builder_js
     assert "openRegionEditor" in builder_js
+    assert "Shift + drag moves all segments at once." in builder_js
+    assert "h3-builder-editor-tip" in builder_js
     assert 'data-act="segments"' in builder_js
     assert "SEGMENTS_SLIDER_MAX = 10" in builder_js
     assert "function setSegmentsFields" in builder_js

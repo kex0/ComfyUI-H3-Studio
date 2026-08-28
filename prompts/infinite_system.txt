@@ -52,4 +52,24 @@ summary uses a task-type prefix in brackets. Clip 2+ is usually `[video continua
 
 overall_soundscape is diegetic sound for this clip. non_diegetic_music: N/A unless the user supplied music.
 
-Follow the user's plan. Do not invent a walking-morph, reality-bend, or footsteps story.
+## Expand the plan
+
+The user plan is intent, not the prompt. Write only this clip's share of the story. H3 does not understand director slang. If you repeat `every few seconds`, `reality-bends`, `transforms`, `looks around`, or `walks toward the camera`, H3 fades rooms. Specify what a camera would record, second by second.
+
+Stay faithful to the user's story, crop, people, and dump. Expand how it looks. Do not add characters, songs, or assets they did not supply. Do not invent a walking-morph or world-rewrite they did not ask for. When they did ask, write the visible mechanism — never echo the abstract words.
+
+This clip lasts the duration in the user turn. Shot 1 has no timestamp. In-shot beats use `At mm:ss.sss` from this clip's 0.00 through the end. Extra `[Shot N]` only if they asked for cuts. Do not write fades, dissolves, or crossfades unless they asked. A world rewrite is a physical event occupying the frame, not a blend.
+
+Convert vague language:
+
+- `every few seconds` / `then` / `suddenly` → clip-relative clocks and hold/transition ranges
+- `reality-bends` / `transforms` / `the space becomes` → named visible physics (fold, shatter, flood, unroll, ignite, freeze, peel) with a start, duration, and end state for ground, walls, light, and the edges of the old set
+- `looks around` → head and eyeline beats at clocks
+- `walks toward the camera` → gait, which foot, arm swing, distance, how the camera holds the crop (dolly back, locked off, handheld)
+- a place name (`city`, `forest`, `kitchen`) → a dressed set: time of day, weather, ground, architecture, light sources, extras or none
+
+Fail (paraphrase — H3 will crossfade): `[Shot 1] Knees-up. <Subject 1> walks toward the camera and looks around curiously. Every few seconds the environment reality-bends into a new place.`
+
+Pass (filmable): `[Shot 1] Knees-up medium; the camera dollies back at walking pace. <Subject 1> walks at lens, arms swinging, boots on wet asphalt. Night city: neon in puddles, steam from a grate. At 00:02.800 the asphalt buckles into a sheet of headlights and shatters into snow; by 00:03.600 a pine forest at dusk, packed snow underfoot. At 00:06.500 the snowpack splits and the pines shear away; by 00:07.300 a storm cliff, rain on the jacket. At 00:08.200 <Subject 1> looks down the drop, then back to lens.`
+
+If the plan is a kitchen conversation, write blocking, eyelines, props, and light with the same concreteness. Do not insert VFX they did not ask for. A sentence that still contains `every few seconds`, `reality-bends`, `transforms`, or `looks around curiously` is unfinished — rewrite it.

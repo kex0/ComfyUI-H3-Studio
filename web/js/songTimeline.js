@@ -92,7 +92,49 @@ function findWidget(node, name) {
 }
 
 function viewUrl(filename) {
-    return api.apiURL("/view?" + new URLSearchParams({ filename, type: "input" }));
+    const norm = String(filename || "").replace(/\\/g, "/");
+    const slash = norm.lastIndexOf("/");
+    const params = { filename: slash >= 0 ? norm.slice(slash + 1) : norm, type: "input" };
+    if (slash >= 0) params.subfolder = norm.slice(0, slash);
+    return api.apiURL("/view?" + new URLSearchParams(params));
+}
+
+function uploadedAudioName(info, file) {
+    const name = String(info?.name || file?.name || "").trim();
+    const sub = String(info?.subfolder || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+    if (!name) return "";
+    return sub ? `${sub}/${name}` : name;
+}
+
+function comboValues(widget) {
+    const raw = widget?._state?.options?.values ?? widget?.options?.values;
+    if (typeof raw === "function") {
+        try {
+            const got = raw();
+            return Array.isArray(got) ? [...got] : [];
+        } catch {
+            return [];
+        }
+    }
+    return Array.isArray(raw) ? [...raw] : [];
+}
+
+function setAudioCombo(node, widget, name) {
+    if (!widget || !name) return;
+    const values = comboValues(widget);
+    if (!values.includes(name)) values.push(name);
+    if (widget.options) widget.options.values = values;
+    if (widget._state) {
+        widget._state.options ||= {};
+        widget._state.options.values = values;
+        widget._state.value = name;
+    }
+    const old = widget.value;
+    widget.value = name;
+    widget.callback?.(name, app.canvas, node, [0, 0], {});
+    node?.onWidgetChanged?.(widget.name || "audio", name, old, widget);
+    node?.setDirtyCanvas?.(true, true);
+    node?.graph?.setDirtyCanvas?.(true, true);
 }
 
 async function uploadAudio(file) {
@@ -467,22 +509,6 @@ function installTimeline(node, attempt = 0) {
     fileInput.type = "file";
     fileInput.accept = "audio/mpeg,audio/wav,audio/x-wav,audio/ogg,audio/flac,audio/mp4,.mp3,.wav,.flac,.ogg,.m4a";
     fileInput.style.display = "none";
-    fileInput.addEventListener("change", async () => {
-        const file = fileInput.files?.[0];
-        if (!file) return;
-        try {
-            const info = await uploadAudio(file);
-            const name = info.name || file.name;
-            if (audioWidget.options?.values && !audioWidget.options.values.includes(name)) {
-                audioWidget.options.values.push(name);
-            }
-            audioWidget.value = name;
-            if (audioWidget._state) audioWidget._state.value = name;
-            audioWidget.callback?.(name);
-        } catch (err) {
-            alert(err);
-        }
-    });
     document.body.append(fileInput);
     hideWidget(lyricsWidget);
     lyricsWidget.serialize = true;
@@ -529,7 +555,7 @@ function installTimeline(node, attempt = 0) {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    filename: audioWidget.value,
+                    filename: audioFilename(),
                     lyrics: lyricsWidget.value || "",
                 }),
             });
@@ -1370,7 +1396,8 @@ function installTimeline(node, attempt = 0) {
     canvas.addEventListener("pointerup", () => { state.drag = null; });
 
     function audioFilename() {
-        const raw = audioWidget?._state?.value ?? audioWidget?.value;
+        const widget = findWidget(node, "audio") || audioWidget;
+        const raw = widget?._state?.value ?? widget?.value;
         return String(raw ?? "").trim();
     }
 
@@ -1387,19 +1414,31 @@ function installTimeline(node, attempt = 0) {
         loadLyrics();
     });
 
+    async function applyUploadedAudio(file) {
+        const info = await uploadAudio(file);
+        const name = uploadedAudioName(info, file);
+        const widget = findWidget(node, "audio") || audioWidget;
+        setAudioCombo(node, widget, name);
+        setAudioFile(name);
+    }
+
+    fileInput.addEventListener("change", async () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = "";
+        if (!file) return;
+        try {
+            await applyUploadedAudio(file);
+        } catch (err) {
+            alert(err);
+        }
+    });
+
     node.onDragOver = (e) => !!e?.dataTransfer?.types?.includes?.("Files");
     node.onDragDrop = async function (e) {
         const item = e.dataTransfer?.files?.[0];
         if (!item || !String(item.type || "").startsWith("audio")) return false;
         try {
-            const info = await uploadAudio(item);
-            const name = info.name || item.name;
-            if (audioWidget.options?.values && !audioWidget.options.values.includes(name)) {
-                audioWidget.options.values.push(name);
-            }
-            audioWidget.value = name;
-            if (audioWidget._state) audioWidget._state.value = name;
-            audioWidget.callback?.(name);
+            await applyUploadedAudio(item);
             return true;
         } catch (err) {
             alert(err);

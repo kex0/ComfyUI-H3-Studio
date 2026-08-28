@@ -2,7 +2,7 @@
 
 Duration `S.SS` = requested clip length with two decimals (default `10.00`).
 
-Six sections, official order, colons required. Condensed from the MiniMax Full-Reference guide / `prompt-minimax-h3/reference-ref2va.md`. Do not use T2VA `integrated_multimodal_description`. Do not add morph / footsteps / crop-lock language unless the user asked for it.
+Six sections, official order, colons required. Condensed from the MiniMax Full-Reference guide / `prompt-minimax-h3/reference-ref2va.md`. Do not use T2VA `integrated_multimodal_description`. Do not add morph / VFX / crop-lock language unless the user asked for it. When they did, write the visible mechanism and clip-relative clocks — never echo `reality-bends`, `every few seconds`, or `the space becomes`.
 
 ## subject_definitions (every clip)
 
@@ -33,7 +33,7 @@ retention_analysis:
 
 detailed_description:
 The target video is live-action, cinematic, <style>.
-[Shot 1] <this clip's opening; Continue clips are already in the previous ending state>. <actions, speech, camera, sound as the user asked>.
+[Shot 1] <dressed opening set, crop, camera rig, and body>. At mm:ss.sss, <the next visible beat: set, body, camera, or VFX mechanism>. <never a paraphrase of the plan>.
 
 overall_soundscape: <diegetic sound for this clip>
 
@@ -41,6 +41,8 @@ non_diegetic_music: N/A
 ```
 
 `summary` task-type prefix from the guide (`reference generation`, `video continuation`, `audio reference`, …). Clip 2+ is usually `[video continuation + reference generation]` when it continues the previous AV latent and still uses stills.
+
+`detailed_description` is a shot list a DP could follow. Each beat needs crop or camera, subject body, dressed environment, and lighting. Vague timing (`then`, `every few seconds`) and unnamed effects (`transforms`, `reality-bends`) are incomplete.
 
 ## Clip 1 — Start
 

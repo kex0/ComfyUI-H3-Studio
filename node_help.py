@@ -41,7 +41,7 @@ NODE_HELP = {
         Wire `pack` into Local Prompter, Music Video, or Auto Chain.
 
         Or click **Copy skill command** and paste into an agent that has the matching skill:
-        `/prompt-minimax-h3-music-video` or `/prompt-minimax-h3-infinite`.
+        `/prompt-minimax-h3-music-video` or `/prompt-minimax-h3-auto_chain`.
         Skills live in this pack: [skills folder](""" + SKILLS_URL + """).
     """).strip(),
     "H3StudioLocalInfinitePrompter": dedent("""
@@ -53,6 +53,8 @@ NODE_HELP = {
         2. For a clip rewrite, put Clip Prompt Fixer between Builder and this node.
         3. Pick a GGUF and queue.
         4. Copy `prompts` into Music Video or Auto Chain.
+
+        Keep the Builder Plan short. The local model expands it into timed, filmable clip bodies.
 
         Music Video needs timed lyrics from Lyrics Timer first.
     """).strip(),
@@ -76,7 +78,7 @@ NODE_HELP = {
 
         1. Builder in **Auto Chain** mode.
         2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
-        3. Paste the prompt from Local Prompter (or the infinite skill).
+        3. Paste the prompt from Local Prompter (or the auto_chain skill).
         4. Queue.
 
         Turn on **seamless loop** if you want a Loop clip that returns to the start.
@@ -133,9 +135,13 @@ NODE_HELP = {
 
         Sharpens small faces on a finished clip. Close-ups are left alone.
 
-        1. Set `video_path` to the PNG folder from Music Video `chain_info`.
+        1. Set `video_path` to the PNG folder from Music Video `chain_info`, or to an MP4.
         2. Keep the default face prompt — do not paste lyrics or the scene.
         3. Connect model, CLIP, VAEs, sampler, sigmas, and noise.
         4. Queue after the music video is done.
+
+        Turn on **seamless loop** if the clip should loop. Faces that need refine at both ends are generated as one wrap-around pass and split back onto the start and end.
+
+        The second output is AUDIO: the wired `audio` socket, or the soundtrack inside `video_path` (MP4, or a PNG folder next to that MP4).
     """).strip(),
 }
