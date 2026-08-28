@@ -207,6 +207,12 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "h3-mention-picker-row" in editor
     assert "itemWithSegment" in editor
     assert "mediaSegmentCount" in editor
+    assert "function collectedInventory" in editor
+    assert "function builderInventory" in editor
+    assert "inventoryFromText" not in editor
+    assert 'if (music && item.kind === "audio") continue;' in editor
+    assert "segmentCount: nodeSegs" in editor
+    assert "regionCount || Number(item.segments)" not in editor
     assert 'mode: "replace"' in editor
     assert "activeMenu.picker" in editor
     assert "applyReplace" in editor

@@ -1455,15 +1455,10 @@ function setPromptText(node, text) {
 }
 
 function collectedInventory(node, source) {
-    const fromBuilder = source ? builderInventory(source).map((item) => (
+    if (!source) return [];
+    return builderInventory(source).map((item) => (
         source === node ? item : { ...item, builder: source }
-    )) : [];
-    const fromDoc = inventoryFromText(promptText(node));
-    const merged = [...fromBuilder];
-    for (const item of fromDoc) {
-        if (!merged.some((entry) => entry.token === item.token)) merged.push(item);
-    }
-    return merged;
+    ));
 }
 
 function renderEditor(node) {
@@ -1476,20 +1471,6 @@ function renderEditor(node) {
     syncViewButton(node);
 }
 
-function inventoryFromText(text) {
-    const found = [];
-    const seen = new Set();
-    for (const match of String(text || "").matchAll(TOKEN_RE)) {
-        const tag = parseTag(match[0]);
-        if (!tag) continue;
-        const key = `${tag.kind}:${tag.index}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        found.push(tag);
-    }
-    return found;
-}
-
 function builderInventory(node) {
     const ui = node.__h3BuilderUi;
     const state = ui?.state || { media: [], models: [] };
@@ -1497,8 +1478,12 @@ function builderInventory(node) {
     let pic = 0;
     let vid = 0;
     let aud = 0;
+    const music = String(findWidget(node, "mode")?.value || "").toLowerCase().includes("music");
+    const segsRaw = Number(findWidget(node, "segments")?.value);
+    const nodeSegs = Number.isFinite(segsRaw) ? Math.max(1, Math.round(segsRaw)) : 1;
     for (const item of state.media || []) {
         if (item?.enabled === false) continue;
+        if (music && item.kind === "audio") continue;
         let kind = "";
         let index = 0;
         if (item.kind === "image") {
@@ -1518,14 +1503,10 @@ function builderInventory(node) {
         const thumb = kind === "Picture" && rel ? (typeof api.apiURL === "function"
             ? api.apiURL(`/h3_studio_builder/file?path=${encodeURIComponent(rel)}`)
             : `/h3_studio_builder/file?path=${encodeURIComponent(rel)}`) : "";
-        const segsRaw = Number(findWidget(node, "segments")?.value);
-        const nodeSegs = Number.isFinite(segsRaw) ? Math.round(segsRaw) : 1;
-        const regionCount = Array.isArray(item.regions) ? item.regions.length : 0;
-        const segmentCount = Math.max(1, regionCount || Number(item.segments) || nodeSegs || 1);
         items.push({
             kind, index, token: `<${kind} ${index}>`,
             description: String(item.description || ""),
-            thumb, crop: item.crop, media: item, segmentCount,
+            thumb, crop: item.crop, media: item, segmentCount: nodeSegs,
         });
     }
     let modelN = 0;
