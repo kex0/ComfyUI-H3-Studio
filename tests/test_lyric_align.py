@@ -98,7 +98,24 @@ def test_load_song_align_wiring():
     assert 'return "h3_studio: lyrics are required"' in loader
     assert "/h3_studio_song/align" in loader
     assert '{"ui": {"lyrics": [timed]}, "result": (loaded, timed)}' in loader
-    assert 'node.addWidget("button", "Time lyrics"' in js
+    assert '"loop": ("STRING"' not in loader
+    assert "h3song-action-upload" in js
+    assert "Upload audio" in js
+    assert 'alignBtn.textContent = "Time lyrics"' in js
+    assert "without H3 loaded" in js
+    assert "h3song-btn-add" in js
+    assert 'addBtn.textContent = "Add A–B"' in js
+    assert 'writeLabel.append(writeBox, document.createTextNode("Live Edit"))' in js
+    assert "h3AbRange" in js
+    assert "function stripLeftoverSongWidgets" in js
+    assert "function pinSongWidgetGrid" in js
+    assert "h3song-panel" in js
+    assert "h3song-footer" in js
+    assert 'getHeight: () => "100%"' in js
+    assert ".lg-node:has(.h3song-panel)" in js
+    assert "const MIN_NODE_HEIGHT = 240" in js
+    assert "function ensureMinSize" in js
+    assert "function installSizeGuard" in js
     assert 'api.fetchApi("/h3_studio_song/align"' in js
     assert 'chainCallback(node, "onExecuted"' in js
     assert "function syncFromWidgets()" in js

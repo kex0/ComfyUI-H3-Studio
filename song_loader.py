@@ -11,7 +11,7 @@ import folder_paths
 import torch
 
 from .lyric_align import resolve_timed_lyrics
-from .lyric_timing import parse_time_range, split_plain_lyric_lines
+from .lyric_timing import split_plain_lyric_lines
 
 AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
 
@@ -74,13 +74,6 @@ class H3StudioLoadSong:
                         "Already-stamped confirm LRC ([start-end] text) is left as-is."
                     ),
                 }),
-                "loop": ("STRING", {
-                    "default": "",
-                    "tooltip": (
-                        "A/B preview loop. Paste 116.167-123.458 or 02:05.375-02:09.040 "
-                        "to set the timeline handles. Does not crop AUDIO."
-                    ),
-                }),
             },
         }
 
@@ -89,9 +82,7 @@ class H3StudioLoadSong:
     FUNCTION = "load_song"
     CATEGORY = "H3 Studio"
 
-    def load_song(self, audio, lyrics="", loop=""):
-        if loop and str(loop).strip():
-            parse_time_range(loop)
+    def load_song(self, audio, lyrics="", **_kwargs):
         path = folder_paths.get_annotated_filepath(audio)
         loaded = load_song_audio(path)
         timed = resolve_timed_lyrics(
@@ -100,7 +91,7 @@ class H3StudioLoadSong:
         return {"ui": {"lyrics": [timed]}, "result": (loaded, timed)}
 
     @classmethod
-    def IS_CHANGED(cls, audio, lyrics="", loop=""):
+    def IS_CHANGED(cls, audio, lyrics="", **_kwargs):
         path = folder_paths.get_annotated_filepath(audio)
         digest = hashlib.sha256()
         with open(path, "rb") as handle:
@@ -109,16 +100,11 @@ class H3StudioLoadSong:
         return digest.hexdigest()
 
     @classmethod
-    def VALIDATE_INPUTS(cls, audio, lyrics="", loop=""):
+    def VALIDATE_INPUTS(cls, audio, lyrics="", **_kwargs):
         if not folder_paths.exists_annotated_filepath(audio):
             return f"Invalid audio file: {audio}"
         if not split_plain_lyric_lines(lyrics):
             return "h3_studio: lyrics are required"
-        if loop and str(loop).strip():
-            try:
-                parse_time_range(loop)
-            except ValueError as exc:
-                return str(exc)
         return True
 
 

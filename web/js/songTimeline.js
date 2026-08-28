@@ -1,7 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { applyVisualSize } from "./nodeSize.js";
 
 const NODE_NAME = "H3StudioLoadSong";
+const MIN_NODE_WIDTH = 500;
+const MIN_PANEL_HEIGHT = 160;
+const MIN_NODE_HEIGHT = 240;
 const LRC_CLOCK = /^\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?(?:-(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?)?\]\s*(.*)$/;
 const LRC_SECS = /^\[(\d+(?:\.\d+)?)(?:-(\d+(?:\.\d+)?))?\]\s*(.*)$/;
 const RANGE_CLOCK = /^\s*\[?(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\s*-\s*(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]?\s*$/;
@@ -129,6 +133,121 @@ function dragPointer(e, target, onMove, onEnd) {
     target.addEventListener("pointercancel", end);
 }
 
+function hideWidget(widget) {
+    if (!widget) return;
+    widget.hidden = true;
+    widget.computeSize = () => [0, -4];
+    widget.computedHeight = 0;
+    widget.options ||= {};
+    widget.options.hidden = true;
+    widget.options.getMinHeight = () => 0;
+    widget.options.getHeight = () => 0;
+    if (widget._state) {
+        widget._state.hidden = true;
+        if (widget._state.options) {
+            widget._state.options.hidden = true;
+            widget._state.options.getMinHeight = () => 0;
+            widget._state.options.getHeight = () => 0;
+        }
+    }
+    for (const el of [widget.inputEl, widget.element]) {
+        if (!el) continue;
+        el.style.display = "none";
+        el.classList.add("h3song-native-hidden");
+    }
+}
+
+function stripLeftoverSongWidgets(node) {
+    if (!Array.isArray(node.widgets)) return;
+    for (let i = node.widgets.length - 1; i >= 0; i--) {
+        const widget = node.widgets[i];
+        const name = String(widget?.name || "");
+        if (name !== "loop" && name !== "h3_song_actions" && widget?.type !== "button") continue;
+        hideWidget(widget);
+        node.widgets.splice(i, 1);
+    }
+    node._widgetSlotsDirty = true;
+}
+
+function songWidgetsGrid(el) {
+    return el?.closest?.("[data-testid='node-widgets'], .lg-node-widgets") || null;
+}
+
+function songWidgetRow(el) {
+    return el?.closest?.("[data-testid='node-widget'], .lg-node-widget") || null;
+}
+
+function pinSongWidgetGrid(node, panelEl) {
+    const grid = songWidgetsGrid(panelEl);
+    if (!grid) return;
+    const rows = [...grid.children].filter((el) => (
+        el.matches?.("[data-testid='node-widget'], .lg-node-widget")
+    ));
+    if (!rows.length) return;
+    const panelRow = songWidgetRow(panelEl);
+    const template = rows.map((row) => {
+        if (row === panelRow) return `minmax(${MIN_PANEL_HEIGHT}px, 1fr)`;
+        if (row.querySelector(".h3song-native-hidden")) return "0px";
+        return "min-content";
+    }).join(" ");
+    if (template) grid.style.setProperty("grid-template-rows", template, "important");
+    grid.style.flex = "1 1 auto";
+    grid.style.minHeight = "0px";
+}
+
+function remainingSongPanelHeight(node, dom) {
+    const sizeH = Array.isArray(node?.size) ? Number(node.size[1]) : 0;
+    const y = Number(dom?.y ?? dom?.last_y);
+    if (Number.isFinite(y) && y > 0 && y < sizeH) {
+        return Math.max(MIN_PANEL_HEIGHT, Math.floor(sizeH - y));
+    }
+    return MIN_PANEL_HEIGHT;
+}
+
+function bindSongPanelSize(widget) {
+    if (!widget) return;
+    widget.options ||= {};
+    widget.options.getMinHeight = () => MIN_PANEL_HEIGHT;
+    widget.options.getHeight = () => "100%";
+    delete widget.options.getMaxHeight;
+    if (Object.hasOwn(widget, "computeSize")) delete widget.computeSize;
+    widget.computeLayoutSize = function () {
+        return { minHeight: MIN_PANEL_HEIGHT, minWidth: 0 };
+    };
+}
+
+function ensureMinSize(node) {
+    const width = Array.isArray(node.size) && Number.isFinite(node.size[0]) ? node.size[0] : 0;
+    const height = Array.isArray(node.size) && Number.isFinite(node.size[1]) ? node.size[1] : 0;
+    if (width >= MIN_NODE_WIDTH && height >= MIN_NODE_HEIGHT) return;
+    applyVisualSize(node, [Math.max(width, MIN_NODE_WIDTH), Math.max(height, MIN_NODE_HEIGHT)]);
+}
+
+function installSizeGuard(node) {
+    if (node.__h3SongSizeGuard) return;
+    node.__h3SongSizeGuard = true;
+    const originalCompute = node.computeSize?.bind(node);
+    node.computeSize = function (out) {
+        const size = originalCompute ? originalCompute(out) : [MIN_NODE_WIDTH, MIN_NODE_HEIGHT];
+        size[0] = Math.max(size[0], MIN_NODE_WIDTH);
+        size[1] = Math.max(size[1], MIN_NODE_HEIGHT);
+        return size;
+    };
+    ensureMinSize(node);
+}
+
+function syncSongPanel(node, widget, root) {
+    if (!widget || !root) return;
+    bindSongPanelSize(widget);
+    const fill = remainingSongPanelHeight(node, widget);
+    const current = Number(widget.computedHeight) || 0;
+    if (fill > current) widget.computedHeight = fill;
+    root.style.flex = "1 1 auto";
+    root.style.width = "100%";
+    root.style.minHeight = "0px";
+    root.style.height = "100%";
+}
+
 function injectStyle() {
     if (document.getElementById("h3-song-dock-style")) return;
     const s = document.createElement("style");
@@ -141,6 +260,48 @@ function injectStyle() {
       .h3song-range { width:13em; background:#111; color:#ddd; border:1px solid #444; border-radius:4px; font:11px monospace; padding:2px 6px; }
       .h3song-btn { background:#333; border:1px solid #555; border-radius:4px; color:#bbb; font:11px sans-serif; cursor:pointer; padding:2px 8px; line-height:16px; white-space:nowrap; flex-shrink:0; }
       .h3song-btn:hover { border-color:#46b4e6; color:#fff; }
+      .h3song-btn-add { background:#1e6f96; border-color:#3aa0d0; color:#fff; font-weight:600; padding:2px 10px; }
+      .h3song-btn-add:hover { background:#2584b0; border-color:#46b4e6; color:#fff; }
+      .h3song-live { display:flex; gap:5px; align-items:center; cursor:pointer; padding:2px 8px; border:1px solid #555; border-radius:4px; background:#243036; color:#ddd; font:11px sans-serif; white-space:nowrap; flex-shrink:0; }
+      .h3song-live:hover { border-color:#46b4e6; color:#fff; }
+      .h3song-actions { display:flex; gap:8px; align-items:stretch; width:100%; height:100%; box-sizing:border-box; padding:1px 0; }
+      .h3song-action { flex:1 1 0; min-width:0; display:flex; align-items:center; justify-content:center; height:28px; padding:0 10px; cursor:pointer; user-select:none; font:600 12px/1 Inter, system-ui, sans-serif; border-radius:8px; }
+      .h3song-action-upload { background:transparent; border:1px dashed rgba(255,255,255,.28); color:#ccc; }
+      .h3song-action-upload:hover { border-color:#46b4e6; color:#fff; background:rgba(70,180,230,.08); }
+      .h3song-action-primary { background:#1e6f96; border:1px solid #3aa0d0; color:#fff; box-shadow:0 0 0 1px rgba(70,180,230,.18); }
+      .h3song-action-primary:hover { background:#2584b0; }
+      .h3song-panel {
+        --comfy-widget-min-height: ${MIN_PANEL_HEIGHT}px; --comfy-widget-height: 100%;
+        display:flex; flex-direction:column; gap:8px;
+        width:100%; height:100%; min-height:0; min-width:0; flex:1 1 auto;
+        overflow:hidden; box-sizing:border-box;
+      }
+      .h3song-lyrics-label { flex:0 0 auto; color:#aaa; font:11px system-ui, sans-serif; }
+      .h3song-lyrics {
+        flex:1 1 auto; min-height:72px; width:100%; resize:none; box-sizing:border-box;
+        background:var(--component-node-widget-background, var(--comfy-input-bg, #222));
+        color:var(--component-node-foreground, var(--input-text, #ddd));
+        border:0; border-radius:8px; padding:8px 10px; outline:none;
+        font:12px/1.4 Inter, system-ui, sans-serif;
+      }
+      .h3song-footer { display:flex; gap:8px; flex:0 0 auto; align-items:stretch; }
+      .h3song-footer .h3song-action { height:28px; }
+      .lg-node:has(.h3song-panel) .lg-node-widgets,
+      .lg-node:has(.h3song-panel) [data-testid="node-widgets"] {
+        flex: 1 1 auto !important; min-height: 0;
+      }
+      .lg-node:has(.h3song-panel) .lg-node-widget:has(.h3song-panel),
+      .lg-node:has(.h3song-panel) [data-testid="node-widget"]:has(.h3song-panel) {
+        min-height: ${MIN_PANEL_HEIGHT}px; min-width: 0; overflow: hidden;
+        height: 100%; display: flex; flex-direction: column;
+      }
+      .lg-node:has(.h3song-panel) .lg-node-widget:has(.h3song-native-hidden),
+      .lg-node:has(.h3song-panel) [data-testid="node-widget"]:has(.h3song-native-hidden),
+      .lg-node:has(.h3song-panel) .lg-node-widget:has(textarea:not(.h3song-lyrics)),
+      .lg-node:has(.h3song-panel) [data-testid="node-widget"]:has(textarea:not(.h3song-lyrics)) {
+        display: none !important; height: 0 !important; min-height: 0 !important;
+        margin: 0 !important; padding: 0 !important; overflow: hidden;
+      }
       .h3song-list { width:100%; flex:0 0 auto; min-height:72px; overflow:auto; background:#111; color:#ddd; border:1px solid #333; box-sizing:border-box; font:12px sans-serif; }
       .h3song-row { display:flex; align-items:center; gap:6px; padding:2px 6px; cursor:pointer; user-select:none; }
       .h3song-row:hover { background:#1c1c1c; }
@@ -286,16 +447,21 @@ function installTimeline(node, attempt = 0) {
     if (node._h3SongTimeline) return;
     const audioWidget = findWidget(node, "audio");
     const lyricsWidget = findWidget(node, "lyrics");
-    const loopWidget = findWidget(node, "loop");
-    if (!audioWidget || !lyricsWidget || !loopWidget) {
+    if (!audioWidget || !lyricsWidget) {
         if (attempt < 10) setTimeout(() => installTimeline(node, attempt + 1), 0);
         return;
     }
-    node._h3SongTimeline = true;
-    node.properties = node.properties || {};
+    const leftoverLoop = findWidget(node, "loop");
+    if (!node.properties) node.properties = {};
     if (node.properties.h3WriteLoopToLyric == null) node.properties.h3WriteLoopToLyric = false;
+    if (!node.properties.h3AbRange && leftoverLoop?.value) {
+        node.properties.h3AbRange = String(leftoverLoop.value);
+    }
+    stripLeftoverSongWidgets(node);
+    node._h3SongTimeline = true;
     injectStyle();
     node.resizable = true;
+    installSizeGuard(node);
 
     const fileInput = document.createElement("input");
     fileInput.type = "file";
@@ -318,14 +484,45 @@ function installTimeline(node, attempt = 0) {
         }
     });
     document.body.append(fileInput);
-    const uploadBtn = node.addWidget("button", "choose audio to upload", "audio", () => {
+    hideWidget(lyricsWidget);
+    lyricsWidget.serialize = true;
+    const panel = document.createElement("div");
+    panel.className = "h3song-panel";
+    const lyricsLabel = document.createElement("div");
+    lyricsLabel.className = "h3song-lyrics-label";
+    lyricsLabel.textContent = "lyrics";
+    const lyricsBox = document.createElement("textarea");
+    lyricsBox.className = "h3song-lyrics";
+    lyricsBox.placeholder = "lyrics";
+    lyricsBox.value = String(lyricsWidget.value || "");
+    let lyricsFromUi = false;
+    lyricsBox.addEventListener("input", () => {
+        lyricsFromUi = true;
+        lyricsWidget.value = lyricsBox.value;
+        lyricsWidget.callback?.(lyricsBox.value);
+        lyricsFromUi = false;
+    });
+    const footer = document.createElement("div");
+    footer.className = "h3song-footer";
+    const uploadBtn = document.createElement("button");
+    uploadBtn.type = "button";
+    uploadBtn.className = "h3song-action h3song-action-upload";
+    uploadBtn.textContent = "Upload audio";
+    uploadBtn.title = "Choose an audio file to upload into ComfyUI input, or drop a file on this node.";
+    uploadBtn.addEventListener("click", () => {
         app.canvas.node_widget = null;
         fileInput.click();
     });
-    uploadBtn.options = uploadBtn.options || {};
-    uploadBtn.options.serialize = false;
-
-    const alignBtn = node.addWidget("button", "Time lyrics", "align", async () => {
+    const alignBtn = document.createElement("button");
+    alignBtn.type = "button";
+    alignBtn.className = "h3song-action h3song-action-primary";
+    alignBtn.textContent = "Time lyrics";
+    alignBtn.title = (
+        "Stamp untimed lyric lines onto the audio with wav2vec2. "
+        + "Lines that already have [start-end] times are kept. "
+        + "Run this before Music Video or Local Prompter, without H3 loaded."
+    );
+    alignBtn.addEventListener("click", async () => {
         app.canvas.node_widget = null;
         try {
             const resp = await api.fetchApi("/h3_studio_song/align", {
@@ -339,14 +536,34 @@ function installTimeline(node, attempt = 0) {
             const data = await resp.json();
             if (!resp.ok) throw new Error(data.error || `${resp.status} ${resp.statusText}`);
             lyricsWidget.value = data.lyrics;
+            lyricsBox.value = data.lyrics;
             lyricsWidget.callback?.(data.lyrics);
             loadLyrics();
         } catch (err) {
             alert(err);
         }
     });
-    alignBtn.options = alignBtn.options || {};
-    alignBtn.options.serialize = false;
+    footer.append(uploadBtn, alignBtn);
+    panel.append(lyricsLabel, lyricsBox, footer);
+    stopProp(panel);
+    const panelWidget = node.addDOMWidget("h3_song_panel", "div", panel, {
+        serialize: false,
+        getMinHeight: () => MIN_PANEL_HEIGHT,
+        getHeight: () => "100%",
+        onDraw: (domWidget) => syncSongPanel(node, domWidget, panel),
+        afterResize: () => syncSongPanel(node, panelWidget, panel),
+    });
+    if (panelWidget) {
+        panelWidget.serialize = false;
+        bindSongPanelSize(panelWidget);
+    }
+    const pinPanel = () => {
+        hideWidget(lyricsWidget);
+        pinSongWidgetGrid(node, panel);
+        syncSongPanel(node, panelWidget, panel);
+    };
+    requestAnimationFrame(pinPanel);
+    setTimeout(pinPanel, 0);
 
     const wrap = document.createElement("div");
     wrap.className = "h3song-wrap";
@@ -385,18 +602,19 @@ function installTimeline(node, attempt = 0) {
     rangeInput.placeholder = "116.167-123.458";
     rangeInput.title = "Paste A–B range: 116.167-123.458 or 02:05.375-02:09.040";
     const addBtn = document.createElement("button");
-    addBtn.className = "h3song-btn";
-    addBtn.textContent = "+";
-    addBtn.title = "Add current A–B to lyrics at this time";
+    addBtn.className = "h3song-btn h3song-btn-add";
+    addBtn.textContent = "Add A–B";
+    addBtn.title = "Add the current A–B range as a lyric line at this time, then type the words.";
     const writeLabel = document.createElement("label");
-    writeLabel.style.cssText = "display:flex;gap:4px;align-items:center;cursor:pointer;";
+    writeLabel.className = "h3song-live";
+    writeLabel.title = "When on, dragging the A/B handles rewrites the selected lyric's start and end times.";
     const writeBox = document.createElement("input");
     writeBox.type = "checkbox";
     writeBox.checked = !!node.properties.h3WriteLoopToLyric;
-    writeBox.title = "When on, dragging A/B rewrites the selected lyric stamps";
-    writeLabel.append(writeBox, document.createTextNode("Write A–B into selected lyric"));
+    writeBox.title = writeLabel.title;
+    writeLabel.append(writeBox, document.createTextNode("Live Edit"));
     controls.append(playBtn, zoomOutBtn, zoomInBtn, fitBtn, rangeInput, addBtn, writeLabel);
-    for (const el of [playBtn, zoomOutBtn, zoomInBtn, fitBtn, rangeInput, addBtn, writeBox]) stopProp(el);
+    for (const el of [playBtn, zoomOutBtn, zoomInBtn, fitBtn, rangeInput, addBtn, writeLabel]) stopProp(el);
 
     const splitter = document.createElement("div");
     splitter.className = "h3song-split";
@@ -704,9 +922,8 @@ function installTimeline(node, attempt = 0) {
     function setLoopWidgets() {
         const text = rangeText();
         loopFromUi = true;
-        loopWidget.value = text;
+        node.properties.h3AbRange = text;
         if (document.activeElement !== rangeInput) rangeInput.value = text;
-        loopWidget.callback?.(loopWidget.value);
         loopFromUi = false;
     }
 
@@ -881,7 +1098,10 @@ function installTimeline(node, attempt = 0) {
 
     function loadLoop(zoom) {
         if (loopFromUi) return;
-        const parsed = parseRange(loopWidget.value) || parseRange(rangeInput.value);
+        if (!node.properties.h3AbRange && leftoverLoop?.value) {
+            node.properties.h3AbRange = String(leftoverLoop.value);
+        }
+        const parsed = parseRange(rangeInput.value) || parseRange(node.properties.h3AbRange);
         if (parsed) {
             applyParsedLoop(parsed, !!zoom);
             return;
@@ -1162,8 +1382,10 @@ function installTimeline(node, attempt = 0) {
     }
 
     chainCallback(audioWidget, "callback", function (value) { setAudioFile(value); });
-    chainCallback(lyricsWidget, "callback", () => loadLyrics());
-    chainCallback(loopWidget, "callback", () => loadLoop(true));
+    chainCallback(lyricsWidget, "callback", () => {
+        if (!lyricsFromUi) lyricsBox.value = String(lyricsWidget.value || "");
+        loadLyrics();
+    });
 
     node.onDragOver = (e) => !!e?.dataTransfer?.types?.includes?.("Files");
     node.onDragDrop = async function (e) {
@@ -1186,6 +1408,9 @@ function installTimeline(node, attempt = 0) {
     };
 
     chainCallback(node, "onResize", function () {
+        hideWidget(lyricsWidget);
+        pinSongWidgetGrid(node, panel);
+        syncSongPanel(node, panelWidget, panel);
         const g = dockGraph();
         if (Math.abs(g.x) < 2) {
             g.w = Math.max(DOCK_MINW, Math.round(node.size[0]));
@@ -1207,6 +1432,7 @@ function installTimeline(node, attempt = 0) {
     });
 
     chainCallback(node, "onConfigure", function (o) {
+        hideWidget(lyricsWidget);
         node._h3Configured = true;
         const saved = o?.properties?.h3DockGraph;
         if (saved && typeof saved.w === "number" && typeof saved.h === "number") {
@@ -1224,6 +1450,7 @@ function installTimeline(node, attempt = 0) {
         if (node._h3DockGeomRestored && o && Array.isArray(o.size) && o.size.length === 2) {
             node.setSize([o.size[0], o.size[1]]);
         }
+        ensureMinSize(node);
         // widgets_values are applied before callbacks; reload the dock from the restored combo
         syncFromWidgets();
         requestAnimationFrame(() => {
@@ -1236,24 +1463,19 @@ function installTimeline(node, attempt = 0) {
         const next = message?.lyrics?.[0];
         if (next == null) return;
         lyricsWidget.value = next;
+        lyricsBox.value = next;
         loadLyrics();
     });
 
     // Fresh nodes only — graph loads sync in onConfigure after widgets_values restore.
     if (!node._h3Configured) syncFromWidgets();
     setTimeout(() => {
+        ensureMinSize(node);
         if (node._h3Configured) {
             syncFromWidgets();
-            if (!node._h3DockGeomRestored) {
-                const fitted = node.computeSize();
-                if (node.size[1] > fitted[1] + 80) node.setSize([Math.max(node.size[0], 360), fitted[1]]);
-                placeDock(true);
-            } else {
-                placeDock(false);
-            }
+            placeDock(!node._h3DockGeomRestored);
             return;
         }
-        if (node.size[0] < 360) node.setSize([360, node.size[1]]);
         placeDock(true);
     }, 0);
 }

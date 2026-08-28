@@ -1,4 +1,4 @@
-"""ComfyUI-H3-Studio: Auto Chain, Music Video, Clip Fixer, Face Refine Video, Load Song, Clip Prompt Fixer, and Local Prompter."""
+"""ComfyUI-H3-Studio: Auto Chain, Music Video, Clip Fixer, Face Refine Video, Lyrics Timer, Clip Prompt Fixer, and Local Prompter."""
 
 WEB_DIRECTORY = "./web/js"
 
@@ -31,7 +31,7 @@ if __package__:
         "H3StudioAutoChainClipFixer": "H3 Studio - Auto Chain Clip Fixer",
         "H3StudioMusicVideoClipFixer": "H3 Studio - Music Video Clip Fixer",
         "H3StudioFaceRefineVideo": "H3 Studio - Face Refine Video",
-        "H3StudioLoadSong": "H3 Studio - Load Song",
+        "H3StudioLoadSong": "H3 Studio - Lyrics Timer",
         "H3StudioBuilder": "H3 Studio - Builder",
         "H3StudioClipPromptFixer": "H3 Studio - Clip Prompt Fixer",
         "H3StudioLocalInfinitePrompter": "H3 Studio - Local Prompter",

@@ -471,7 +471,7 @@ def test_music_video_node_contract():
     assert "H3StudioMusicVideoAdvanced" not in init
     assert "Music Video Advanced" not in init
     assert '"H3StudioLoadSong": H3StudioLoadSong' in init
-    assert '"H3 Studio - Load Song"' in init
+    assert '"H3 Studio - Lyrics Timer"' in init
     assert '"H3StudioAutoChain": H3StudioAutoChain' in init
     assert "H3StudioAutoChainAdvanced" not in init
     assert "Auto Chain Advanced" not in init
