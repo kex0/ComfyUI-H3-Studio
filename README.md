@@ -1,40 +1,58 @@
 # ComfyUI-H3-Studio
 
-Standalone ComfyUI nodes for MiniMax H3 music videos: chain generation, lipsync to a song, lossless PNG handoff, and face refine. This pack does not import Herrgotts or ComfyUI-H3-FaceRefine.
+With this extension you can create videos of any length with MiniMax H3 in ComfyUI, including seamlessly looping videos and full music videos.
 
-## Nodes
+Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → **Local Prompter** or an [agent skill](skills/README.md) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**.
 
-| Node | What it does |
-|---|---|
-| **H3 Studio - Music Video** | Generate clips to cover a source song from one H3 Studio prompt document, using a Builder pack for models, refs, and the song. One H3 Studio prompt covers every clip, or switch to one prompt per clip. Clip count and max duration come from the prompt (or duration from the pack). Per-clip mode shows duration and segments widgets. `<Audio 1>` stays the song slice; Builder audios are `<Audio 2>` / `<Audio 3>`. `song_audio_lock` defaults to 0.9. `IMAGE` is the temp PNG sequence. |
-| **H3 Studio - Auto Chain** | N-clip Ref2VA Start / Continue / Finish stitch from a Builder pack. One H3 Studio prompt document covers every clip, or switch to one prompt per clip. Duration, clip count, and loop come from the prompt (or duration/clip count from the pack). Per-clip `<Model N>` / `<Picture N>` / `<Video N>` / `<Audio N>` select a subset. Optional seamless loop. Same temp PNG sequence as `IMAGE`. |
-| **H3 Studio - Builder** | Drop images, videos, and audio, or wire several IMAGE/VIDEO/AUDIO outputs to the `Media` socket; connect patched H3 models. Switch Auto Chain / Music Video (Music Video disables audio refs and shows song plus lyrics). Outputs a pack. Plan, max clip duration, clip count, loop, song, and lyrics travel with the pack. |
-| **H3 Studio - Clip Prompt Fixer** | Paste a Music Video (or Auto Chain) prompt, pick clip indices, and write a fix Plan. Passes a `clip_fix` pack to Local Prompter so only those clip bodies are rewritten. Lyrics, `time:`, `audio:`, and `slice:` stay locked. **Copy skill command** copies `/prompt-minimax-h3-clip-fix` with the plan, the selected clips, and one previous and one following clip. Local Prompter output is the selected `## Clip` sections only (no document header). |
-| **H3 Studio - Music Video Clip Fixer** | Same sockets as Music Video plus `clip_index`, including the same Single prompt / One prompt per clip editor. No duration / clip-count widgets: those come from the pasted `## Clip` sections (and saved latents). Regenerates those on-disk clips under `latent_prefix` (backs them up first), sandwiches previous + next latents when the next slot is kept, and restitches the full chain. Empty `clip_index` regenerates every `## Clip` in `prompt`. |
-| **H3 Studio - Auto Chain Clip Fixer** | Same sockets as Auto Chain plus `clip_index`, including the same Single prompt / One prompt per clip editor. Duration, clip count, and loop are read from the prompt (and pack / on-disk chain). Same backup / sandwich / full restitch. If Finish is selected and a Loop clip exists, the Loop clip is regenerated too. |
-| **H3 Studio - Face Refine Video** | Face-refine a finished clip. Set `video_path` to the Music Video PNG folder from `chain_info`, or to an MP4. `IMAGE` is the refined temp PNG sequence. `AUDIO` is the wired song, or the soundtrack from that video. **seamless loop** generates start/end faces as one wrap-around pass so the join stays seamless. |
-| **H3 Studio - Lyrics Timer** | Load AUDIO as `song`. Paste required lyrics (untimed lines or confirm LRC). Untimed lines are timed per line with wav2vec2 (Time lyrics or first queue, without H3 loaded). Already-stamped LRC is not overwritten. Edit stamps on the timeline. |
-| **H3 Studio - Local Prompter** | Start local llama.cpp on a catalog or local GGUF. Auto Chain pack → Auto Chain prompt. Music Video pack (song + timed lyrics) → letter-refine, CLIP windows, Music Video prompt. Then stop the server. Inventory and plan come from the pack. |
+This pack does not import Herrgotts or ComfyUI-H3-FaceRefine. Class names are unique so both packs can sit in the same ComfyUI.
 
-Category: **H3 Studio**.
+## Builder
 
-Class names (`H3StudioMusicVideo`, `H3StudioAutoChain`, `H3StudioMusicVideoClipFixer`, `H3StudioAutoChainClipFixer`, `H3StudioBuilder`, `H3StudioClipPromptFixer`, `H3StudioFaceRefineVideo`, `H3StudioLoadSong`, `H3StudioLocalInfinitePrompter`) are unique, so this pack can sit next to Herrgotts / Face Refine without node-id collisions. Continuation runtime hooks reuse Herrgotts patch markers so both packs do not fight over PackedLayout.
+![H3 Studio Builder](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder.webp)
+
+Collects models, pictures, videos, and audio for the other H3 Studio nodes. Drop files on the list, or wire IMAGE / VIDEO / AUDIO into **Media**. Connect patched H3 models to `model_1` (and further model sockets). Switch **Auto Chain** or **Music Video**, write a short Plan, then wire `pack` into Local Prompter, Auto Chain, or Music Video.
+
+Music Video needs a song and timed lyrics from Lyrics Timer. Builder audio refs are unused in that mode; the song is `<Audio 1>`. Auto Chain can cite Builder audio as `<Audio 1>`.
+
+Or click **Copy skill command** and paste into an agent that has `/prompt-minimax-h3-auto_chain` or `/prompt-minimax-h3-music-video`.
+
+![Builder image crop](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-image-edit.webp)
+
+Right-click a still for crop, first-frame lock, unused, and remove. Crop sets which part of the picture H3 sees.
+
+![Builder image context menu](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-image-context-menu.webp)
+
+![Builder video trim](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-video-edit.webp)
+
+Video and audio open a trim timeline. Clip count follows the Builder **segments** widget. Shift + drag moves all segments at once.
+
+![Builder audio trim](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-audio-edit.webp)
+
+## Lyrics Timer
+
+[![Lyrics Timer — click for a short demo](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer.webp)](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer-demo.mp4)
+
+Stamp lyric times onto your song. Paste lyrics that match the vocal as closely as possible, upload the audio, then press **Time lyrics**. Queue this node **without H3 loaded**; the first run downloads torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Already-stamped confirm LRC (`[start-end]`) is not overwritten.
+
+**Timeline:** drag the A/B handles to a phrase, then **Add A–B**. Click a line to select it. **Live Edit** rewrites that line's times as you drag. Double-click a line to edit the words. Play A–B to check the match.
+
+**Lyric syntax:** `~word~` is a held syllable. `<instrumental>` is a rest with no singing (own line).
+
+Wire `song` and `lyrics` into Builder (Music Video mode). The [music-video skill](skills/README.md) posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton). Parakeet / WhisperX stay out of Comfy's venv.
 
 ## Local Prompter
 
-The node does not bundle llama.cpp. Install the official binaries, then either drop the catalog GGUF in `ComfyUI/models/LLM/` or enable `allow_download` once (~16 GB from Hugging Face). You can also pick a scanned `local:…gguf` or **Local GGUF** plus `gguf_path`.
+![Local Prompter](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/local-prompter.webp)
 
-Builder (Auto Chain mode) → `pack` → Local Prompter. Duration, clip count, loop, and plan come from the Builder pack.
+Writes Auto Chain or Music Video prompts on your machine from the Builder pack. Keep the Plan short; the local model expands it into timed, filmable clip bodies.
 
-Builder (Music Video mode) with Lyrics Timer `song` + timed `lyrics` → `pack` → Local Prompter. It letter-refines locked confirm lines with wav2vec2, plans CLIP windows from the song length, llama-fills Ref2VA bodies, and writes `mode: music_video` with `time:` / `lyrics:` locked. Untimed lyrics fail until you Time lyrics on Lyrics Timer.
+1. Wire Builder into this node (put **Clip Prompt Fixer** in between to rewrite a few clips).
+2. Pick a GGUF and queue **without H3 loaded**. The node unloads Comfy models, starts `llama-server` on `127.0.0.1`, generates each clip, then kills the server.
+3. Copy `prompts` into Auto Chain or Music Video.
 
-To rewrite a few clips in an existing Music Video prompt without regenerating the rest: Builder → **Clip Prompt Fixer** → Local Prompter. Paste the full document (or just the `## Clip` sections to change), set `clip_index` (`11-12` or `11,12`), and write a Plan. Local Prompter revises those six-section bodies only and **outputs only the selected `## Clip` sections** (no `H3 Studio prompt` header, not neighbor clips). Lyrics and timings stay locked. Neighbor clips in the seed are still used as continue-from / land-into context while writing. **Copy skill command** copies `/prompt-minimax-h3-clip-fix` plus clip index, plan, Builder dump, the selected clips, and one previous and one following clip so you can paste it into an agent with the matching skill instead of queuing Local Prompter.
+The node does not bundle llama.cpp. Install the official binaries, then either drop the catalog GGUF in `ComfyUI/models/LLM/` or enable `allow_download` once (~16 GB from Hugging Face). You can also pick a scanned `local:…gguf` or **Local GGUF** plus `gguf_path`. 27B Q4_K_M and H3 cannot share 32 GB VRAM; queue the video graph after the prompter finishes.
 
-To re-render those clips: Builder → **Music Video Clip Fixer** or **Auto Chain Clip Fixer** (same models/VAE/sampler as the original chain). Point `latent_prefix` at the existing chain, paste the rewritten clips (or the full document), and set `clip_index`. Empty `clip_index` regenerates every `## Clip` in the paste. Before sampling, the node checks that `1..N` latents exist, copies the overwritten slots into `backup_YYYYMMDD_HHMMSS/` next to the prefix, then regenerates in order: clip `i` continues from the new `i-1` if that slot was just written, else from the on-disk `i-1`; it packs the on-disk `i+1` opening as end context only when `i+1` is **not** also being rewritten. After overwrites, it restitches the full saved chain (Auto Chain also regenerates Loop when Finish is in the set). These nodes need H3 loaded, unlike Local Prompter.
-
-Queue **this node without H3 loaded**. It unloads Comfy models, starts llama-server on `127.0.0.1`, generates each clip, then kills the server. Copy `prompts` into Auto Chain / Music Video `prompt`. 27B Q4_K_M and H3 cannot share 32 GB VRAM; queue the video graph after the prompter finishes.
-
-Auto Chain and Music Video share one prompt format: `H3 Studio prompt` then `## Clip` sections (Music Video also has `time:` / `lyrics:` per clip). Each clip has its own `subject_definitions`; those tags are the dump stills/videos/audio that clip loads. A top-level `subject_definitions` block is only a fallback for older documents whose clips omit one. The prompt editor turns `@Picture N` into chips; **Replace this** changes that chip, **Replace all** swaps a reference everywhere, and **Remove** deletes the chip. Video/audio chips show numbered buttons when the Builder trim has more than one segment (`<Video 1:2>` selects slice 2). Type `#` to create a dialogue block (`<d>[English] ...</d>` by default); click the flag to change language. Enter leaves the block, Shift+Enter inserts a line break inside it.
+Music Video packs need timed lyrics from Lyrics Timer first. Untimed lyrics fail until you Time lyrics. Local Prompter letter-refines locked confirm lines, plans CLIP windows from the song length, and writes `mode: music_video` with `time:` / `lyrics:` locked.
 
 ### Install llama.cpp
 
@@ -52,9 +70,110 @@ Linux/macOS: extract the matching `.tar.gz` from the same release and put `llama
 
 Multi-clip jobs need `llama-server`. A single clip can fall back to `llama-cli`. Optional overrides: the node's `llama_server` widget, or `H3_STUDIO_LLAMA_SERVER` / `H3_STUDIO_LLAMA_CLI`.
 
-## Music Video → Face Refine
+## Auto Chain
 
-Point Face Refine `video_path` at the `png …` folder from `chain_info` (ComfyUI temp). Each run prints a disk/RAM banner first: uncompressed RGB ceiling for the PNG sequence, plus float32 RAM for the `IMAGE` output.
+![Auto Chain](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/auto-chain.webp)
+
+Generates a multi-clip video from Builder refs (not lipsync-to-song). Each clip continues from the last, so length is N × clip duration rather than one H3 window.
+
+1. Builder in **Auto Chain** mode.
+2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
+3. Paste the prompt from Local Prompter (or `/prompt-minimax-h3-auto_chain`).
+4. Queue.
+
+Turn on **seamless loop** for a Loop clip that returns to the start. Keep `latent_prefix` if you might Clip-Fix later. `IMAGE` is the temp PNG sequence.
+
+## Music Video
+
+![Music Video, single prompt](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-video-single-prompt.webp)
+
+Generates a lipsync video that follows the song. Clip count and max duration come from the prompt (or duration from the pack). `<Audio 1>` is always the song slice; extra Builder audios (if you cited them) are `<Audio 2>` / `<Audio 3>`.
+
+1. Builder in **Music Video** mode, with song + timed lyrics.
+2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
+3. Paste the prompt from Local Prompter (or `/prompt-minimax-h3-music-video`).
+4. Queue.
+
+![Music Video, one prompt per clip](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-video-one-prompt-per-clip.webp)
+
+**Single prompt** / **One prompt per clip** only changes how the prompt is shown. It does not affect generation. Per-clip layout shows duration and segments widgets. Keep `latent_prefix` if you might Clip-Fix later. Face Refine uses the PNG folder printed in `chain_info`.
+
+## Clip Prompt Fixer
+
+![Clip Prompt Fixer](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/clip-prompt-fixer.webp)
+
+Rewrites a few clips in an existing Music Video or Auto Chain prompt. Lyrics, `time:`, `audio:`, and `slice:` stay locked.
+
+1. Wire Builder into this node.
+2. Paste the full document (or just the `## Clip` sections to change).
+3. Set `clip_index` (`11-12` or `11,12`).
+4. Write a Plan of what should change.
+
+Then either wire this node into **Local Prompter** and queue, or click **Copy skill command** and paste `/prompt-minimax-h3-clip-fix` into an agent. The command includes the plan, the selected clips, and one previous and one following clip. Local Prompter output is the selected `## Clip` sections only (no `H3 Studio prompt` header, not neighbor clips). Neighbor clips in the seed are still used as continue-from / land-into context while writing.
+
+![Clip Prompt Fixer into Local Prompter](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/clip-prompt-fixer-local-prompter-output.webp)
+
+## Auto Chain Clip Fixer
+
+![Auto Chain Clip Fixer](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/auto-chain-clip-fixer.webp)
+
+Re-renders chosen clips of an existing Auto Chain, then restitches the chain. Same sockets as Auto Chain plus `clip_index`, including the same Single prompt / One prompt per clip editor. Duration, clip count, and loop are read from the prompt (and pack / on-disk chain).
+
+1. Use the same models / VAE / sampler as the original run.
+2. Set `latent_prefix` to that chain's folder.
+3. Paste the rewritten clips (or the full document) and set `clip_index`.
+4. Queue.
+
+Empty `clip_index` regenerates every `## Clip` in the paste. Overwritten slots are copied into `backup_YYYYMMDD_HHMMSS/` next to the prefix first. Clip `i` continues from the new `i-1` if that slot was just written, else from the on-disk `i-1`; it packs the on-disk `i+1` opening as end context only when `i+1` is **not** also being rewritten. If Finish is selected and a Loop clip exists, Loop is regenerated too. These nodes need H3 loaded, unlike Local Prompter.
+
+## Music Video Clip Fixer
+
+![Music Video Clip Fixer](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-video-clip-fixer.webp)
+
+Same idea as Auto Chain Clip Fixer for a Music Video chain: same sockets as Music Video plus `clip_index`. No duration / clip-count widgets; those come from the pasted `## Clip` sections and saved latents. Same backup / sandwich / full restitch.
+
+## Face Refine Video
+
+![Face Refine Video](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/face-refine-video.webp)
+
+Sharpens small faces on a finished clip. Close-ups are left alone.
+
+1. Set `video_path` to the PNG folder from Music Video / Auto Chain `chain_info`, or to an MP4.
+2. Keep the default face prompt — do not paste lyrics or the scene.
+3. Connect model, CLIP, VAEs, sampler, sigmas, and noise.
+4. Queue after the video is done.
+
+Turn on **seamless loop** if the clip should loop. Faces that need refine at both ends are generated as one wrap-around pass and split back onto the start and end. `IMAGE` is the refined temp PNG sequence. `AUDIO` is the wired song, or the soundtrack from that video (MP4, or a PNG folder next to that MP4). Each run prints a disk/RAM banner first.
+
+## Prompt editor
+
+Auto Chain and Music Video share one prompt format: `H3 Studio prompt` then `## Clip` sections (Music Video also has `time:` / `lyrics:` per clip). Each clip has its own `subject_definitions`; those tags are the dump stills/videos/audio that clip loads.
+
+Type `@` for the chip autofill. Only media the Builder currently supplies appear (unused, deleted, and out-of-range segments are omitted). Video/audio chips show numbered buttons when the node has more than one segment (`<Video 1:2>` selects slice 2).
+
+![Chip autofill](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/autofill-chip-picker.webp)
+
+Right-click a chip to preview, pick a segment, **Replace this**, **Replace all**, or **Remove**.
+
+![Chip context menu](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/chip-context-menu.webp)
+
+Type `#` to create a dialogue block (`<d>[English] ...</d>` by default); click the flag to change language. Enter leaves the block, Shift+Enter inserts a line break inside it.
+
+![Chip prompt](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-prompt-example.webp)
+
+The raw view is the same document as text (`<Picture 1>` instead of chips).
+
+![Raw prompt](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-raw-prompt-example.webp)
+
+## Help
+
+Every H3 Studio node has a **?** in the header. That guide is the short version of the steps above.
+
+![Question-mark node help](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/question-mark-help.webp)
+
+## Agent skills
+
+Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claude Code, and similar). Music Video **Copy skill command** includes the Comfy origin, song path, and timed lyrics. The music-video skill does not download torch; it reuses this Comfy install.
 
 ## Dependencies
 
@@ -62,14 +181,6 @@ Point Face Refine `video_path` at the `png …` folder from `chain_info` (ComfyU
 - llama.cpp (`llama-server`) for Local Prompter — see [Install llama.cpp](#install-llamacpp)
 - `ultralytics`, `scipy`, `insightface` for Face Refine
 - MaskVidExperiments is optional (crop-teleport packing). Without it, Face Refine falls back to gaussian crop follow
-
-## Lyrics Timer
-
-Times untimed lyrics with torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Use **Time lyrics** or queue Lyrics Timer **without H3 loaded**; the first run downloads that bundle. Confirm-format `[start-end]` LRC is passed through so timeline edits stick. Local Prompter then letter-refines those locked lines and fills the Music Video prompt. The **music-video agent skill** posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton). Parakeet / WhisperX stay out of Comfy’s venv.
-
-## Agent skills
-
-Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claude Code, and similar). Music Video **Copy skill command** includes the Comfy origin, song path, and timed lyrics. The music-video skill does not download torch; it reuses this Comfy install.
 
 ## License
 
