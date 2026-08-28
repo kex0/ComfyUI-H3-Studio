@@ -263,6 +263,8 @@ def test_init_mapping_and_docs():
     system = (ROOT / "prompts" / "infinite_system.txt").read_text(encoding="utf-8")
     assert "H3StudioLocalInfinitePrompter" in init
     assert "H3 Studio - Local Prompter" in init
+    assert "H3StudioClipPromptFixer" in init
+    assert "H3 Studio - Clip Prompt Fixer" in init
     assert "Local Infinite Prompter" not in init
     assert "RETURN_TYPES = (\"STRING\", \"INT\", \"STRING\")" in node
     assert "allow_download" in node
@@ -273,6 +275,9 @@ def test_init_mapping_and_docs():
     assert " — writing" in node
     assert "H3StudioLocalInfinitePrompter" in js
     assert "Local Prompter" in readme
+    assert "Clip Prompt Fixer" in readme
+    assert "/prompt-minimax-h3-clip-fix" in readme
+    assert "Copy skill command" in readme
     assert "Local Infinite Prompter" not in readme
     assert "llama-server" in readme
     assert "allow_download" in readme
@@ -366,4 +371,263 @@ def test_generate_music_video_bodies_locks_lyrics():
     node = (ROOT / "prompter_infinite.py").read_text(encoding="utf-8")
     assert "assemble_music_video_document" in node
     assert "refine_confirm_lyrics" in node
+
+
+MV_CLIP2 = """subject_definitions:
+<Subject 1> is the woman in <Picture 1>, matching that still's face, hair, and wardrobe.
+<Audio 1> is the source-song slice covering 8.208–18.333 of the master.
+
+summary:
+[video continuation + reference generation] REWRITTEN clip two.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same red jacket.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] second line</d>.
+
+overall_soundscape: city night
+
+non_diegetic_music: N/A
+"""
+
+SEED_BODY_1 = """subject_definitions:
+<Subject 1> is the woman in <Picture 1>, matching that still's face, hair, and wardrobe.
+<Picture 1> is the first frame of [Shot 1], showing a blonde woman in a red jacket.
+<Audio 1> is the source-song slice covering 0.000–10.125 of the master.
+
+summary:
+[keyframe completion + reference generation] Seed clip one.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same face and red jacket.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] hello world</d>.
+
+overall_soundscape: city night
+
+non_diegetic_music: N/A
+"""
+
+SEED_BODY_2 = """subject_definitions:
+<Subject 1> is the woman in <Picture 1>, matching that still's face, hair, and wardrobe.
+<Audio 1> is the source-song slice covering 8.208–18.333 of the master.
+
+summary:
+[video continuation + reference generation] Seed clip two.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same red jacket.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] second line</d>.
+
+overall_soundscape: city night
+
+non_diegetic_music: N/A
+"""
+
+SEED_BODY_3 = """subject_definitions:
+<Subject 1> is the woman in <Picture 1>, matching that still's face, hair, and wardrobe.
+<Audio 1> is the source-song slice covering 16.416–26.541 of the master.
+
+summary:
+[video continuation + reference generation] Seed clip three.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - same red jacket.
+
+detailed_description:
+The target video is live-action, cinematic, night street lighting.
+[Shot 1] Mouth and face follow <Audio 1>. <Subject 1> (S1) sings, <d>[English] third line</d>.
+
+overall_soundscape: city night
+
+non_diegetic_music: N/A
+"""
+
+
+def _mv_clip(index, t0, t1, slice_s, a0, a1, lyrics, prompt):
+    return {
+        "index": index,
+        "time": (t0, t1),
+        "duration_seconds": 10.125,
+        "slice": slice_s,
+        "audio": (a0, a1),
+        "lyrics": lyrics,
+        "instrumental": False,
+        "prompt": prompt,
+    }
+
+
+def test_clip_fix_rewrites_selected_indices_only():
+    prompter = _load("prompter_infinite")
+    docs = _load("prompt_document")
+    inventory = prompter.parse_builder_dump(
+        "H3 Studio Builder pack\n"
+        "duration: 10.00s\n"
+        "Model 1: cinematic identity LoRA stack\n"
+        "Picture 1: blonde woman, red jacket (first frame)\n"
+    )
+    clips = [
+        _mv_clip(1, 0.0, 9.125, 0.0, 0.0, 10.125, "[00:01.000-00:04.000] hello world", SEED_BODY_1),
+        _mv_clip(2, 9.125, 18.25, 8.208, 8.208, 18.333, "[00:12.000-00:14.000] second line", SEED_BODY_2),
+        _mv_clip(3, 18.25, 27.375, 16.416, 16.416, 26.541, "[00:22.000-00:24.000] third line", SEED_BODY_3),
+    ]
+    captured = []
+
+    def chat(messages):
+        captured.append(messages[-1]["content"])
+        return MV_CLIP2
+
+    bodies, notes = prompter.generate_music_video_bodies(
+        inventory, "make clip 2 darker", clips, chat, rewrite_indices=[2],
+    )
+    assert notes == []
+    assert len(captured) == 1
+    turn = captured[0]
+    assert "Existing clip body to revise:" in turn
+    assert "Seed clip two." in turn
+    assert "Previous clip body:" in turn
+    assert "Seed clip one." in turn
+    assert "Following clip (do not rewrite; land so this body can continue):" in turn
+    assert "Seed clip three." in turn
+    assert "Apply the user plan." in turn
+    assert bodies[0]["prompt"] == SEED_BODY_1
+    assert bodies[2]["prompt"] == SEED_BODY_3
+    assert "REWRITTEN clip two" in bodies[1]["prompt"]
+    assert bodies[0]["lyrics"] == "[00:01.000-00:04.000] hello world"
+    assert bodies[1]["lyrics"] == "[00:12.000-00:14.000] second line"
+    assert bodies[1]["time"] == (9.125, 18.25)
+    assert bodies[2]["time"] == (18.25, 27.375)
+    document = docs.assemble_music_video_document(10.125, bodies)
+    parsed = docs.parse_prompt_document(document, mode="music_video")
+    assert parsed["clips"][0]["lyrics"] == clips[0]["lyrics"]
+    assert parsed["clips"][1]["lyrics"] == clips[1]["lyrics"]
+    assert parsed["clips"][2]["lyrics"] == clips[2]["lyrics"]
+    assert "REWRITTEN clip two" in docs.clip_body(parsed["clips"][1])
+    assert "Seed clip one." in docs.clip_body(parsed["clips"][0])
+    selected = prompter.clip_fix_output_clips(bodies, [2])
+    assert [int(c["index"]) for c in selected] == [2]
+    out = docs.assemble_music_video_document(10.125, selected, header=False)
+    assert out.startswith("## Clip 2 — Continue")
+    assert "H3 Studio prompt" not in out
+    assert "mode: music_video" not in out
+    assert "segments:" not in out
+    assert "## Clip 1 — Start" not in out
+    assert "## Clip 3 — Continue" not in out
+    assert "Seed clip one." not in out
+    assert "Seed clip three." not in out
+    ac_items = prompter.clip_fix_output_bodies(
+        [{"index": 1}, {"index": 2}, {"index": 3}],
+        [("**Clip 1 — Start**", "a", "Start"), ("**Clip 2 — Continue**", "b", "Continue"),
+         ("**Clip 3 — Finish**", "c", "Finish")],
+        [2],
+    )
+    ac_doc = docs.assemble_auto_chain_document(10.0, 1, False, ac_items, header=False)
+    assert ac_doc.startswith("## Clip 2 — Continue")
+    assert "H3 Studio prompt" not in ac_doc
+    assert "mode: auto_chain" not in ac_doc
+    assert "## Clip 1 — Start" not in ac_doc
+    assert "## Clip 3 — Finish" not in ac_doc
+
+
+def test_load_clip_fix_seed_skips_retiming():
+    prompter = _load("prompter_infinite")
+    fixer = _load("clip_prompt_fixer")
+    seed = (
+        "H3 Studio prompt\nmode: music_video\nduration: 10.125\nsegments: 2\n\n"
+        "## Clip 1 — Start\n"
+        "time: 0.000-9.125\nduration_seconds: 10.125\naudio: 0.000-10.125\n"
+        "lyrics:\n[00:01.000-00:03.000] hello\n"
+        "subject_definitions:\nx\nsummary:\none\nretention_analysis:\nx\n"
+        "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n\n"
+        "## Clip 2 — Continue\n"
+        "time: 9.125-18.250\nduration_seconds: 10.125\naudio: 8.208-18.333\n"
+        "lyrics:\n[00:12.000-00:14.000] next\n"
+        "subject_definitions:\nx\nsummary:\ntwo\nretention_analysis:\nx\n"
+        "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n"
+    )
+    pack = {
+        "models": [{"index": 1, "description": "base", "model": "m"}],
+        "prompt_mode": "clip_fix",
+        "seed_prompt": seed,
+        "fix_clips": [2],
+        "plan": "darker",
+        "song": {"waveform": object(), "sample_rate": 16000},
+        "lyrics": "[00:01.000-00:03.000] hello",
+    }
+    through = _load("pack").require_pack(pack)
+    loaded = prompter.load_clip_fix_seed(through)
+    assert loaded["song_audio"] is True
+    assert loaded["rewrite"] == [2]
+    assert [int(c["index"]) for c in loaded["items"]] == [1, 2]
+    assert loaded["items"][0]["lyrics"] == "[00:01.000-00:03.000] hello"
+    assert "one" in loaded["items"][0]["prompt"]
+    node = (ROOT / "prompter_infinite.py").read_text(encoding="utf-8")
+    assert 'str(pack.get("prompt_mode") or "") == "clip_fix"' in node
+    assert "load_clip_fix_seed" in node
+    js = (ROOT / "web" / "js" / "clipPromptFixer.js").read_text(encoding="utf-8")
+    assert "H3StudioClipPromptFixer" in js
+    assert "Copy skill command" in js
+    assert "/prompt-minimax-h3-clip-fix" in js
+    assert fixer.PROMPT_MODE_CLIP_FIX == "clip_fix"
+
+
+def test_is_changed_includes_clip_fix_fields():
+    prompter = _load("prompter_infinite")
+    base = {
+        "models": [{"index": 1, "description": "base"}],
+        "pictures": [],
+        "videos": [],
+        "audios": [],
+        "plan": "walk",
+    }
+    a = prompter.H3StudioLocalInfinitePrompter.IS_CHANGED(pack=base)
+    b = prompter.H3StudioLocalInfinitePrompter.IS_CHANGED(pack={
+        **base,
+        "prompt_mode": "clip_fix",
+        "seed_prompt": "## Clip 2",
+        "fix_clips": [2],
+    })
+    c = prompter.H3StudioLocalInfinitePrompter.IS_CHANGED(pack={
+        **base,
+        "prompt_mode": "clip_fix",
+        "seed_prompt": "## Clip 2 changed",
+        "fix_clips": [2],
+    })
+    assert a != b
+    assert b != c
+
+
+def test_generate_clip_bodies_rewrite_keeps_neighbors():
+    prompter = _load("prompter_infinite")
+    inventory = prompter.parse_builder_dump(DUMP)
+    seed_clips = [
+        {"index": 1, "role": "Start", "prompt": VALID_CLIP1, "is_loop": False},
+        {"index": 2, "role": "Finish", "prompt": VALID_CLIP2, "is_loop": False},
+    ]
+    captured = []
+
+    def chat(messages):
+        captured.append(messages[-1]["content"])
+        return VALID_CLIP1.replace("starts walking", "REWRITTEN start")
+
+    bodies, notes = prompter.generate_clip_bodies(
+        inventory, "darker start", 2, 10.0, False, chat,
+        seed_clips=seed_clips, rewrite_indices=[1],
+    )
+    assert notes == []
+    assert len(captured) == 1
+    assert "Existing clip body to revise:" in captured[0]
+    assert "starts walking" in captured[0]
+    assert "Following clip (do not rewrite; land so this body can continue):" in captured[0]
+    assert "keeps walking" in captured[0]
+    assert "REWRITTEN start" in bodies[0][1]
+    assert bodies[1][1] == VALID_CLIP2
+    assert bodies[1][0] == "**Clip 2 — Finish**"
 

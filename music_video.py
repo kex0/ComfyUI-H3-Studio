@@ -239,10 +239,10 @@ class H3StudioMusicVideo:
                 }),
                 "prompt": ("STRING", {
                     "multiline": True, "dynamicPrompts": False, "default": "",
-                    "tooltip": "One H3 Studio prompt for every clip (## Clip N with that clip's subject_definitions). A top-level subject_definitions block is legacy fallback. Legacy h3_music_video / CLIP blocks still parse. Clip count comes from this text, not a segments widget.",
+                    "tooltip": "One H3 Studio prompt for every clip (## Clip N with that clip's subject_definitions). A top-level subject_definitions block is legacy fallback. Legacy h3_music_video / CLIP blocks still parse. Single-prompt mode reads clip count from this text. One-prompt-per-clip mode shows duration and segments widgets plus one editor per clip.",
                 }),
                 "duration": ("FLOAT", {
-                    "default": 10.0, "min": 5.0, "max": 15.0, "step": 0.1,
+                    "default": 10.0, "min": 5.0, "max": 15.0, "step": 0.001, "round": 0.001,
                     "tooltip": (
                         "Maximum requested length of any clip in seconds at 24 fps. H3 snaps upward "
                         "(10.0 s -> 243 frames ~= 10.125 s, 8.0 s -> 8.0 s). Must match the prompt "
@@ -300,7 +300,7 @@ class H3StudioMusicVideo:
                 }),
                 "save_images_to_disk": save_images_to_disk_spec(),
             }
-        required.pop("duration", None)
+        duration_spec = required.pop("duration", None)
         optional = {
                 "song_audio_lock": ("FLOAT", {
                     "default": 0.9, "min": 0.0, "max": 1.0, "step": 0.05,
@@ -312,6 +312,23 @@ class H3StudioMusicVideo:
                     ),
                 }),
             }
+        if duration_spec:
+            optional["duration"] = duration_spec
+        optional["segments"] = ("INT", {
+            "default": 3, "min": 1, "max": MUSIC_MAX_SEGMENTS, "step": 1,
+            "tooltip": (
+                "How many ## Clip sections to show in one-prompt-per-clip mode. "
+                "Clip 1 is Start; later clips are Continue. The prompt document stores those bodies. "
+                "Single-prompt mode still reads clip count from the prompt."
+            ),
+        })
+        optional["prompt_mode"] = (["single", "per_clip"], {
+            "default": "single",
+            "tooltip": (
+                "single: one H3 Studio prompt with ## Clip sections. "
+                "per_clip: duration and segments widgets plus one prompt per clip."
+            ),
+        })
         return {
             "required": required,
             "optional": optional,
@@ -325,20 +342,25 @@ class H3StudioMusicVideo:
     CATEGORY = "H3 Studio"
     DESCRIPTION = (
         "Music Video with a Builder pack: per-clip model and extra Ref2VA refs from prompt tags. "
-        "Clip count and max duration come from the prompt, or duration from the Builder pack. "
+        "Single-prompt mode reads clip count and max duration from the prompt, or duration from "
+        "the Builder pack. One-prompt-per-clip mode shows duration and segments widgets. "
         "The generate-length song slice stays <Audio 1>. Song comes from the Builder pack."
     )
 
-    def generate(self, pack, **kwargs):
+    def generate(self, pack, prompt_mode="single", **kwargs):
         from .pack import require_pack
         from .prompt_document import duration_and_segments_from_pack_or_prompt
         pack = require_pack(pack)
-        duration, _segments = duration_and_segments_from_pack_or_prompt(
-            pack, kwargs.get("prompt") or "", need_segments=False,
-        )
+        mode = str(prompt_mode or "single").strip().lower().replace(" ", "_")
+        if mode == "per_clip" and kwargs.get("duration") is not None and not kwargs.get("clip_fix"):
+            kwargs["duration"] = float(kwargs["duration"])
+        else:
+            duration, _segments = duration_and_segments_from_pack_or_prompt(
+                pack, kwargs.get("prompt") or "", need_segments=False,
+            )
+            kwargs["duration"] = duration
         kwargs["pack"] = pack
         kwargs["model_1"] = pack["models"][0]["model"]
-        kwargs["duration"] = duration
         song = pack.get("song")
         if not isinstance(song, dict) or song.get("waveform") is None:
             raise ValueError(
@@ -355,12 +377,26 @@ class H3StudioMusicVideo:
                  resume_from_clip=1, stop_after_clip=0,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
                  save_images_to_disk=False,
-                 unique_id=None, pack=None, **kwargs):
+                 unique_id=None, pack=None, clip_fix=False, clip_index="", **kwargs):
         from .nodes import (
             H3ContinuousAnalyzeHandoverV11, H3ContinuousContinueV11,
             H3ContinuousLoadLatent, H3ContinuousSaveLatent, H3ContinuousStartV11,
             _resolve_continue_slice, _saved_chain_file, _streams_from_latent,
         )
+
+        if clip_fix:
+            return self._generate_fix_chain(
+                model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
+                width, height, duration, context_frames=context_frames,
+                handover_preset=handover_preset, save_segment_latents=save_segment_latents,
+                save_clip_videos=save_clip_videos, freeze_overlap=freeze_overlap,
+                overlap_soft_steps=overlap_soft_steps, song_audio_lock=song_audio_lock,
+                latent_prefix=latent_prefix, video_crossfade_frames=video_crossfade_frames,
+                audio_crossfade_ms=audio_crossfade_ms,
+                max_safe_tail_bridge_frames=max_safe_tail_bridge_frames,
+                save_images_to_disk=save_images_to_disk, unique_id=unique_id, pack=pack,
+                clip_index=clip_index, **kwargs,
+            )
 
         parsed = parse_music_video_prompt(prompt)
         song_seconds = _song_seconds(song)
@@ -687,6 +723,262 @@ class H3StudioMusicVideo:
             f"music video | {resume_note}{stop_note}{xf_note}{clip_total} clip(s) | song {song_seconds:.3f}s | "
             f"picture {int(result['video_frames']) / FPS:.3f}s | max {parsed['max_duration_seconds']:.3f}s | mux {mux_note} | "
             f"keep latents={'yes' if save_segment_latents else 'no'} | clip videos={'yes' if save_clip_videos else 'no'} | "
+            f"{'png ' + str(frames_dir) if frames_dir else 'IMAGE in RAM'} | {stitch_info}"
+        )
+        if notes:
+            info += " | " + " ; ".join(notes[-clip_total * 4:])
+        _LOG.info("h3_continuous: %s", info)
+        return pack_image_output(images, frames_dir, audio, info, last_latent, last_handover)
+
+    def _generate_fix_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
+                 width, height, duration, context_frames="22", handover_preset="Balanced",
+                 save_segment_latents=True, save_clip_videos=True,
+                 freeze_overlap=True, overlap_soft_steps=2, song_audio_lock=0.9,
+                 latent_prefix="h3_music_video/clip",
+                 video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
+                 save_images_to_disk=False, unique_id=None, pack=None, clip_index="", **kwargs):
+        from .clip_fix_chain import clip_fix_neighbors, expand_fix_clip
+        from .clip_fixer import prepare_clip_fix
+        from .latent_math import steps_for_pixel_frames
+        from .nodes import (
+            H3ContinuousAnalyzeHandoverV11, H3ContinuousContinueV11,
+            H3ContinuousLoadLatent, H3ContinuousSaveLatent, H3ContinuousStartV11,
+            _read_safetensors_metadata, _saved_chain_file, _streams_from_latent,
+        )
+
+        song_seconds = _song_seconds(song)
+        context_frames = str(context_frames)
+        reference_images = collect_music_video_reference_images(kwargs)
+        if pack is not None:
+            from .pack import require_pack
+            pack = require_pack(pack)
+            model_1 = pack["models"][0]["model"]
+        song_frames = song_frame_count(song_seconds)
+        prepared = prepare_clip_fix(latent_prefix, prompt, clip_index)
+        story_n = prepared["story_n"]
+        regen = prepared["regen"]
+        saved_set = set(prepared["saved"])
+
+        from .png_sequence import (
+            node_temp_frames_dir, pack_image_output, require_image_ram, warn_disk_budget,
+        )
+        save_images_to_disk = bool(save_images_to_disk)
+        extra = (
+            f"Music Video clip fix: {len(regen)} clip(s) / {story_n} on disk "
+            f"(stitched picture ~{song_frames} frames / {song_seconds:.1f}s)"
+        )
+        try:
+            require_image_ram(song_frames, width, height, save_images_to_disk)
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"{exc} Clip Fixer restitches the full {story_n}-clip video "
+                f"({song_frames} frames), not only the regenerated clip(s)."
+            ) from exc
+        out_frames = None
+        if save_images_to_disk:
+            warn_disk_budget(
+                song_frames, width, height,
+                unique_id=unique_id, extra=extra,
+            )
+            out_frames = node_temp_frames_dir(PNG_PREFIX, unique_id)
+
+        start = H3ContinuousStartV11()
+        cont = H3ContinuousContinueV11()
+        analyzer = H3ContinuousAnalyzeHandoverV11()
+        saver = H3ContinuousSaveLatent()
+        loader = H3ContinuousLoadLatent()
+        notes = [f"backup {prepared['backup_dir']}"]
+        save_clip_videos = bool(save_clip_videos)
+        freeze_overlap = bool(freeze_overlap)
+        overlap_soft_steps = int(overlap_soft_steps)
+        song_audio_lock = min(max(float(song_audio_lock), 0.0), 1.0)
+        last_latent = None
+        last_handover = None
+        previous_latent = None
+        identity_frame = None
+        generated_this_run = set()
+
+        def load_slot(index, decode_identity=False):
+            path = _saved_chain_file(latent_prefix, index)
+            latent, resolved, info, handover = loader.load(path, clip_index=0)
+            latent = _cpu_av_latent(latent)
+            identity = None
+            if decode_identity:
+                images = _decode_video(video_vae, latent)
+                identity = _overlap_identity_frame(
+                    images, latent, context_frames, handover,
+                )
+                del images
+                _release_loaded_models()
+            return latent, resolved, handover, identity, info
+
+        for clip_index_n in regen:
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            i = clip_index_n - 1
+            clip_prompt = expand_fix_clip(prompt, clip_index_n, song_audio=True, kwargs=kwargs)
+            resolved = _resolve_clip_pack(pack, clip_prompt, song_audio=True)
+            if resolved is not None:
+                clip_prompt = resolved["prompt"]
+                clip_model = resolved["model"]
+                pack_refs = _pack_ref_kwargs(resolved, audio_vae)
+                clip_images = _start_reference_images(resolved) if i == 0 else (resolved["pictures"] or [])
+            else:
+                clip_model = model_1
+                pack_refs = {}
+                clip_images = reference_images
+
+            existing_path = _saved_chain_file(latent_prefix, clip_index_n)
+            metadata, _old_handover = _read_safetensors_metadata(existing_path)
+            raw_start = metadata.get("song_slice_start_frame")
+            if raw_start in (None, ""):
+                raise ValueError(
+                    f"h3_music_video: saved clip {clip_index_n} has no song_slice_start_frame"
+                )
+            slice_start = int(raw_start)
+            grid_frames = int(metadata.get("frame_count") or 0)
+            if grid_frames <= 0:
+                raise ValueError(f"h3_music_video: saved clip {clip_index_n} has no frame_count")
+            clip_duration = float(grid_frames) / FPS
+            prev_i, next_i = clip_fix_neighbors(clip_index_n, regen, saved_set)
+            is_last = clip_index_n == story_n
+            role = "Start" if i == 0 else ("Finish" if is_last else "Continue")
+            _release_loaded_models()
+
+            if prev_i is None and clip_index_n != 1:
+                raise ValueError(
+                    f"h3_music_video: clip {clip_index_n} needs saved clip {clip_index_n - 1}"
+                )
+            if clip_index_n > 1:
+                if prev_i in generated_this_run and previous_latent is not None:
+                    pass
+                else:
+                    _progress(unique_id, f"Loading saved clip {prev_i} (previous context)")
+                    previous_latent, _p, last_handover, identity_frame, info = load_slot(
+                        prev_i, decode_identity=True,
+                    )
+                    notes.append(f"prev clip {prev_i} {info}")
+
+            end_latent = None
+            end_skip = None
+            if next_i is not None:
+                _progress(unique_id, f"Loading saved clip {next_i} (next context)")
+                end_latent, end_path, _h, _id, end_info = load_slot(next_i, decode_identity=False)
+                end_meta, _ = _read_safetensors_metadata(end_path)
+                end_skip = steps_for_pixel_frames(int(end_meta.get("head_context_frames") or 0))
+                notes.append(f"next clip {next_i} {end_info}")
+
+            _progress(
+                unique_id,
+                f"Clip {clip_index_n} ({role}) — {clip_duration:.3f}s slice @ {slice_start} / {song_frames} frames",
+            )
+            song_latent = _encode_song_slice(audio_vae, song, slice_start, grid_frames)
+            _release_loaded_models()
+            _progress(unique_id, f"Clip {clip_index_n} ({role}) — encoding")
+
+            if clip_index_n == 1:
+                start_still = _pack_first_frame(pack)
+                positive, empty = start.build(
+                    clip, video_vae, clip_prompt, width, height, clip_duration,
+                    first_frame=start_still, last_frame=None,
+                    reference_images=clip_images, song_audio_latent=song_latent,
+                    song_audio_lock=song_audio_lock,
+                    **pack_refs,
+                )
+                head_context = 0
+            else:
+                extra_end = {}
+                if end_latent is not None:
+                    extra_end["end_latent"] = end_latent
+                    extra_end["end_skip_steps"] = end_skip
+                    extra_end["pack_end_audio"] = False
+                positive, empty, head_context, _ignored_tail, handover_info = cont.build(
+                    clip, video_vae, previous_latent, clip_prompt, width, height, clip_duration,
+                    context_frames=context_frames, handover_mode="auto",
+                    alignment_mode="phase_aligned_extended",
+                    handover=last_handover, last_frame=None,
+                    reference_images=clip_images, song_audio_latent=song_latent,
+                    freeze_overlap=freeze_overlap, overlap_soft_steps=overlap_soft_steps,
+                    identity_frame=identity_frame, song_audio_lock=song_audio_lock,
+                    **extra_end, **pack_refs,
+                )
+                notes.append(f"clip {clip_index_n} {handover_info}")
+
+            del song_latent, end_latent
+            _release_loaded_models()
+            _progress(unique_id, f"Clip {clip_index_n} ({role}) — sampling")
+            sampled = _sample_segment(
+                clip_model, positive, sampler, sigmas, _segment_noise(noise, i), empty,
+                join_prefix=(clip_index_n != 1),
+            )
+            last_latent = _cpu_av_latent(sampled)
+            del sampled, empty
+            _release_loaded_models()
+
+            _progress(unique_id, f"Clip {clip_index_n} ({role}) — handover decode")
+            images = _decode_video(video_vae, last_latent)
+            handover, status, *_rest = analyzer.analyze(
+                images, preset=handover_preset, context_frames=context_frames,
+            )
+            previous_latent = last_latent
+            handover = _apply_music_join_tail(
+                handover, int(images.shape[0]), context_frames, last_latent, is_last,
+            )
+            last_handover = handover
+            identity_frame = _overlap_identity_frame(
+                images, last_latent, context_frames, handover,
+            )
+            tail = 0 if is_last else int(handover.get("landing_tail_frames", 0))
+            cursor = advance_cursor(slice_start, grid_frames, tail, is_last=is_last)
+            del positive
+            extra = {
+                "music_video": "1",
+                "song_slice_start_frame": str(int(slice_start)),
+                "song_cursor_after": str(int(cursor)),
+            }
+            latent_path, save_info = saver.save(
+                last_latent, latent_prefix, clip_index=clip_index_n,
+                handover=handover, head_context_frames=int(head_context or 0),
+                extra_metadata=extra,
+            )
+            generated_this_run.add(clip_index_n)
+            notes.append(f"clip {clip_index_n} {status} | saved {save_info}")
+            _LOG.info("h3_music_video: clip fix %s saved %s", clip_index_n, latent_path)
+            if save_clip_videos:
+                song_preview, generated_preview = _write_music_video_clip_previews(
+                    images, audio_vae, last_latent, song, slice_start,
+                    latent_prefix, clip_index_n,
+                )
+                notes.append(f"clip {clip_index_n} preview {song_preview}")
+                notes.append(f"clip {clip_index_n} generated preview {generated_preview}")
+            del images
+            _release_loaded_models()
+
+        saved_paths = [_saved_chain_file(latent_prefix, n) for n in range(1, story_n + 1)]
+        _release_loaded_models()
+        result = _stitch_saved_video(
+            video_vae, saved_paths,
+            video_crossfade_frames=video_crossfade_frames,
+            max_safe_tail_bridge_frames=max_safe_tail_bridge_frames,
+            unique_id=unique_id,
+            max_video_frames=song_frames,
+            frames_dir=out_frames,
+        )
+        images = result["images"]
+        frames_dir = result["frames_dir"]
+        records = _mux_records_from_saved(saved_paths, max_safe_tail_bridge_frames)
+        spans = music_video_mux_spans(records)
+        audio = _mux_original_song(song, spans, int(result["video_frames"]))
+        stitch_info = result["info"]
+        mux_note = "contiguous master" if mux_spans_are_contiguous(spans) else "non-contiguous master spans"
+        _release_loaded_models()
+        clip_total = len(saved_paths)
+        _progress(unique_id, f"Done — {clip_total} clip(s) muxed")
+        xf_note = f"audio_crossfade_ms={float(audio_crossfade_ms):g} (skipped on contiguous master) | "
+        info = (
+            f"music video clip fix | clips {','.join(str(n) for n in regen)} | "
+            f"{xf_note}{clip_total} clip(s) | song {song_seconds:.3f}s | "
+            f"picture {int(result['video_frames']) / FPS:.3f}s | mux {mux_note} | "
+            f"backup {prepared['backup_dir']} | "
             f"{'png ' + str(frames_dir) if frames_dir else 'IMAGE in RAM'} | {stitch_info}"
         )
         if notes:

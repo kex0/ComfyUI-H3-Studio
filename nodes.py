@@ -22,7 +22,7 @@ from comfy_extras.nodes_minimax_h3 import adapt_canvas, _encode_ref_audio
 from .latent_math import (
     FPS, AUDIO_HZ, FRAME_RESCALE, CONTEXT_TO_STEPS,
     temporal_shape, pixel_frames, context_slice, phase_aware_context_slice, phase_aligned_extended_context_slice, audio_slice_for_pixel_window,
-    loop_end_keyframe_offsets,
+    loop_end_keyframe_offsets, next_clip_end_keyframe_offsets, end_context_includes_audio,
 )
 from .patch_layout import HC_INDEX, HC_AUDIO_END_FRAME
 from .runtime_patches import ensure_h3_runtime_patches
@@ -507,7 +507,7 @@ class H3ContinuousContinue:
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,
-              audio_vae=None):
+              audio_vae=None, end_skip_steps=None, pack_end_audio=True):
         _require_patches()
         context_frames = int(context_frames)
         manual_landing_tail_frames = int(manual_landing_tail_frames)
@@ -515,8 +515,6 @@ class H3ContinuousContinue:
         alignment_mode = str(alignment_mode).lower()
         if alignment_mode not in ("phase_aligned_extended", "phase_aware", "legacy_17"):
             raise ValueError(f"h3_continuous: unknown alignment_mode {alignment_mode!r}")
-        if song_audio_latent is not None and end_latent is not None:
-            raise ValueError("h3_continuous: song_audio_latent cannot be combined with end_latent")
 
         prev_video, prev_audio = _streams_from_latent(previous_latent)
         previous_frame_count = pixel_frames(prev_video.shape[2])
@@ -647,9 +645,17 @@ class H3ContinuousContinue:
                     "h3_continuous: loop end latent resolution differs from the target clip. "
                     f"End latent grid {tuple(end_video.shape[-2:])}, target grid {tuple(target_video.shape[-2:])}."
                 )
-            end_spec = loop_end_keyframe_offsets(
-                frame_count, context_frames, source_latent_t=int(end_video.shape[2]),
-            )
+            source_t = int(end_video.shape[2])
+            if end_skip_steps is not None:
+                end_spec = next_clip_end_keyframe_offsets(
+                    frame_count, context_frames, source_t, end_skip_steps,
+                )
+                end_kind = "next-clip opening"
+            else:
+                end_spec = loop_end_keyframe_offsets(
+                    frame_count, context_frames, source_latent_t=source_t,
+                )
+                end_kind = "clip-1 opening"
             end_source = end_video[:1, :, end_spec["source_start_t"]:end_spec["source_end_t"]].clone()
             if int(end_source.shape[2]) != end_spec["context_steps"]:
                 raise RuntimeError("h3_continuous: loop end context slice length mismatch")
@@ -664,20 +670,24 @@ class H3ContinuousContinue:
                     "latent": end_source[:, :, k:k + 1],
                 })
             skip_frames = int(end_spec["source_skip_frames"])
-            a0e, a1e, end_error_end = audio_slice_for_pixel_window(
-                end_audio.shape[-1], skip_frames, skip_frames + end_spec["actual_context_frames"]
-            )
-            end_audio_context = end_audio[:1, ..., a0e:a1e].clone()
-            refs.append({
-                "kind": "audio",
-                "ref_audio_t": int(end_audio_context.shape[-1]),
-                "audio_latent": end_audio_context,
-                HC_AUDIO_END_FRAME: float(frame_count) + float(end_error_end) / FRAME_RESCALE,
-            })
-            skip_note = f", skip {skip_frames} I2VA hold frame(s)" if skip_frames else ""
+            skip_note = f", skip {skip_frames} frame(s)" if skip_frames else ""
+            audio_note_end = ""
+            if end_context_includes_audio(song_audio_latent, pack_end_audio):
+                a0e, a1e, end_error_end = audio_slice_for_pixel_window(
+                    end_audio.shape[-1], skip_frames, skip_frames + end_spec["actual_context_frames"]
+                )
+                end_audio_context = end_audio[:1, ..., a0e:a1e].clone()
+                refs.append({
+                    "kind": "audio",
+                    "ref_audio_t": int(end_audio_context.shape[-1]),
+                    "audio_latent": end_audio_context,
+                    HC_AUDIO_END_FRAME: float(frame_count) + float(end_error_end) / FRAME_RESCALE,
+                })
+                audio_note_end = f" + {int(end_audio_context.shape[-1])} audio step(s)"
+            prefix = "loop sandwich end" if end_skip_steps is None else "sandwich end"
             end_note = (
-                f" | loop sandwich end {end_spec['actual_context_frames']} video frame(s) "
-                f"+ {int(end_audio_context.shape[-1])} audio step(s) from clip-1 opening{skip_note}"
+                f" | {prefix} {end_spec['actual_context_frames']} video frame(s)"
+                f"{audio_note_end} from {end_kind}{skip_note}"
             )
         elif last is not None:
             release_loaded_models()
@@ -761,7 +771,7 @@ class H3ContinuousSaveLatent:
         return {
             "required": {
                 "latent": ("LATENT", {"tooltip": "Sampler output AV latent for the accepted clip."}),
-                "filename_prefix": ("STRING", {"default": "h3_continuous/clip"}),
+                "filename_prefix": ("STRING", {"default": "h3_auto_chain/clip"}),
                 "clip_index": ("INT", {"default": 1, "min": 0, "max": 99999,
                     "tooltip": "Fixed chain slot. Clip 1 -> 1, clip 2 -> 2. Re-rendering overwrites that slot. 0 = auto-numbered attempt."}),
             },
@@ -1235,7 +1245,7 @@ class H3ContinuousContinueV1(H3ContinuousContinue):
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,
-              audio_vae=None):
+              audio_vae=None, end_skip_steps=None, pack_end_audio=True):
         requested_frames = duration_to_requested_frames(duration)
         frame_count, _, _ = temporal_shape(requested_frames)
         internal_alignment = normalize_alignment_mode(alignment_mode)
@@ -1256,6 +1266,7 @@ class H3ContinuousContinueV1(H3ContinuousContinue):
             song_audio_lock=song_audio_lock,
             reference_videos=reference_videos, reference_video_audios=reference_video_audios,
             reference_audios=reference_audios, audio_vae=audio_vae,
+            end_skip_steps=end_skip_steps, pack_end_audio=pack_end_audio,
         )
 
 
@@ -1777,7 +1788,7 @@ def _read_safetensors_metadata(path):
 def _saved_chain_base(prefix):
     p = (prefix or "").strip().strip('"').strip("'")
     if not p:
-        p = "h3_continuous/clip"
+        p = "h3_auto_chain/clip"
     if p.lower().endswith(".safetensors"):
         p = p[:-len(".safetensors")]
     if os.path.isabs(p):
@@ -1790,7 +1801,7 @@ def _saved_chain_file(prefix, clip_index):
     exact = f"{base}_{int(clip_index):05d}.safetensors"
     if os.path.isfile(exact):
         return exact
-    # Folder fallback for users who pass h3_continuous rather than h3_continuous/clip.
+    # Folder fallback for users who pass h3_continuous rather than h3_auto_chain/clip.
     if os.path.isdir(base):
         suffix = f"_{int(clip_index):05d}.safetensors"
         matches = [os.path.join(base, f) for f in os.listdir(base) if f.endswith(suffix)]
@@ -1799,7 +1810,7 @@ def _saved_chain_file(prefix, clip_index):
         if len(matches) > 1:
             raise ValueError(
                 f"h3_continuous: multiple saved chains contain clip {clip_index} in {base}; "
-                "use the exact latent prefix, e.g. h3_continuous/clip"
+                "use the exact latent prefix, e.g. h3_auto_chain/clip"
             )
     raise FileNotFoundError(f"h3_continuous: saved chain clip {clip_index} not found at {exact}")
 
@@ -1874,8 +1885,8 @@ class H3ContinuousStitchSavedChainV11:
             "required": {
                 "video_vae": ("VAE", {"tooltip": "MiniMax H3 Video VAE used to decode the saved full video latents."}),
                 "audio_vae": ("VAE", {"tooltip": "MiniMax H3 Audio VAE used to decode the saved full audio latents."}),
-                "latent_prefix": ("STRING", {"default": "h3_continuous/clip",
-                    "tooltip": "Saved latent prefix relative to ComfyUI/output, e.g. h3_continuous/clip for clip_00001.safetensors, clip_00002.safetensors, ..."}),
+                "latent_prefix": ("STRING", {"default": "h3_auto_chain/clip",
+                    "tooltip": "Saved latent prefix relative to ComfyUI/output, e.g. h3_auto_chain/clip for clip_00001.safetensors, clip_00002.safetensors, ..."}),
                 "first_clip": ("INT", {"default": 1, "min": 1, "max": 99999}),
                 "last_clip": ("INT", {"default": 0, "min": 0, "max": 99999,
                     "tooltip": "0 = automatically use the highest numbered clip for this prefix."}),
@@ -1904,7 +1915,7 @@ class H3ContinuousStitchSavedChainV11:
     CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
     DESCRIPTION = "v1.2 memory-bounded saved-chain stitcher. Uses Safe Tail Bridge plus short context-aligned video/audio seam smoothing and encodes directly to MP4 so peak memory does not grow with chain length."
 
-    def stitch(self, video_vae, audio_vae, latent_prefix="h3_continuous/clip",
+    def stitch(self, video_vae, audio_vae, latent_prefix="h3_auto_chain/clip",
                first_clip=1, last_clip=0, filename_prefix="video/Herrgotts_H3_Infinite_Stitched",
                video_crossfade_frames=4, audio_crossfade_ms=15.0, luminance_match=False,
                luminance_fade_frames=16, max_luminance_correction_percent=10.0, crf=18,

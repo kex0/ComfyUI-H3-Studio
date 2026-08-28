@@ -416,3 +416,55 @@ def loop_end_keyframe_offsets(frame_count, context_frames, source_latent_t=None)
         "source_start_t": skip,
         "source_end_t": skip + ctx_steps,
     }
+
+
+def steps_for_pixel_frames(frames: int) -> int:
+    """Latent steps whose pixel span is at least ``frames``."""
+    need = int(frames)
+    if need <= 0:
+        return 0
+    t = 0
+    while pixel_frames(t) < need:
+        t += 1
+        if t > 4096:
+            raise ValueError(f"no latent length covers {need} pixel frames")
+    return t
+
+
+def next_clip_end_keyframe_offsets(frame_count, context_frames, source_latent_t, skip_steps):
+    """Pack a Continue neighbor's kept opening as this clip's end context.
+
+    ``skip_steps`` is the next clip's saved head (overlap discarded at stitch),
+    not clip 1's I2VA still-hold.
+    """
+    if context_frames not in CONTEXT_TO_STEPS:
+        raise ValueError(f"context_frames must be one of {sorted(CONTEXT_TO_STEPS)}")
+    ctx_steps = CONTEXT_TO_STEPS[int(context_frames)]
+    actual = pixel_frames(ctx_steps)
+    frame_count = int(frame_count)
+    if actual >= frame_count:
+        raise ValueError("next-clip end context does not fit in the target clip")
+    source_t = int(source_latent_t)
+    skip = max(0, int(skip_steps or 0))
+    if skip + ctx_steps > source_t:
+        skip = 0
+        if ctx_steps > source_t:
+            raise ValueError("next clip is too short for end context")
+    wrap = pixel_frames(skip)
+    start = frame_count - actual
+    return {
+        "context_steps": ctx_steps,
+        "actual_context_frames": actual,
+        "source_skip_steps": skip,
+        "source_skip_frames": wrap,
+        "wrap_start_frames": wrap,
+        "offsets": [start + p for p in step_offsets(ctx_steps)],
+        "source_start_t": skip,
+        "source_end_t": skip + ctx_steps,
+    }
+
+
+def end_context_includes_audio(song_audio_latent=None, pack_end_audio=True) -> bool:
+    if song_audio_latent is not None:
+        return False
+    return bool(pack_end_audio)

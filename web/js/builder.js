@@ -32,7 +32,8 @@ const COPY_PACK_TIP = "Copies duration, segments, loop, enabled labels, and the 
 const MIN_REGION_SEC = 2;
 const MIN_DURATION_SEC = 5;
 const MAX_DURATION_SEC = 15;
-const MAX_SEGMENTS = 12;
+const MAX_SEGMENTS = 999;
+const SEGMENTS_SLIDER_MAX = 10;
 const MIN_VIEW_SEC = 1;
 const SERIAL_WIDGETS = ["state_json", "mode", "max_clip_duration", "segments", "loop", "song_file", "lyrics"];
 const REGION_COLORS = [
@@ -1282,7 +1283,7 @@ function openRegionEditor(node, item, save) {
             <input type="number" min="${MIN_DURATION_SEC}" max="${MAX_DURATION_SEC}" step="0.1" data-act="duration-num">
           </label>
           <label>segments
-            <input type="range" min="1" max="${MAX_SEGMENTS}" step="1" data-act="segments">
+            <input type="range" min="1" max="${SEGMENTS_SLIDER_MAX}" step="1" data-act="segments">
             <input type="number" min="1" max="${MAX_SEGMENTS}" step="1" data-act="segments-num">
           </label>
         </div>
@@ -1337,6 +1338,17 @@ function openRegionEditor(node, item, save) {
     function source() {
         return Math.max(0, Number(item.duration) || 0);
     }
+    function currentSegments() {
+        const raw = Number(segmentsNum.value);
+        if (Number.isFinite(raw)) return Math.max(1, Math.min(MAX_SEGMENTS, Math.round(raw)));
+        return Math.max(1, Math.min(MAX_SEGMENTS, Math.round(Number(segmentsInput.value) || 1)));
+    }
+    function setSegmentsFields(value) {
+        const n = Math.max(1, Math.min(MAX_SEGMENTS, Math.round(Number(value) || 1)));
+        segmentsInput.value = String(Math.min(SEGMENTS_SLIDER_MAX, n));
+        segmentsNum.value = String(n);
+        return n;
+    }
     function viewWindow() {
         const src = source() || 1;
         const span = viewSpan > 0 ? Math.min(src, Math.max(MIN_VIEW_SEC, viewSpan)) : src;
@@ -1377,7 +1389,7 @@ function openRegionEditor(node, item, save) {
     function clampDraft() {
         const src = source();
         const limit = cap();
-        const n = Math.max(1, Math.min(MAX_SEGMENTS, Math.round(Number(segmentsInput.value) || 1)));
+        const n = currentSegments();
         if (!draft.regions.length) {
             draft.regions = adjacentRegions({ start: item.start, length: item.length }, n, src, limit);
         } else if (draft.regions.length !== n) {
@@ -1432,7 +1444,7 @@ function openRegionEditor(node, item, save) {
             durationNum.value = Number(durationInput.value).toFixed(1);
         }
         if (!fieldFocused(segmentsNum)) {
-            segmentsNum.value = String(Math.round(Number(segmentsInput.value) || 1));
+            setSegmentsFields(currentSegments());
         }
         regionLabel.textContent = draft.regions.map((region, index) => (
             `${index + 1}: ${formatClock(region.start)}–${formatClock(region.start + region.length)}`
@@ -1487,9 +1499,8 @@ function openRegionEditor(node, item, save) {
         }
     });
     durationInput.value = String(builderDuration(node));
-    segmentsInput.value = String(builderSegments(node));
+    setSegmentsFields(builderSegments(node));
     durationNum.value = Number(durationInput.value).toFixed(1);
-    segmentsNum.value = String(Math.round(Number(segmentsInput.value) || 1));
     function applyDurationNum(clamp) {
         const raw = Number(durationNum.value);
         if (!Number.isFinite(raw)) {
@@ -1504,13 +1515,11 @@ function openRegionEditor(node, item, save) {
     function applySegmentsNum(clamp) {
         const raw = Number(segmentsNum.value);
         if (!Number.isFinite(raw)) {
-            if (clamp) segmentsNum.value = String(Math.round(Number(segmentsInput.value) || 1));
+            if (clamp) setSegmentsFields(currentSegments());
             return;
         }
         if (!clamp && (raw < 1 || raw > MAX_SEGMENTS)) return;
-        const n = Math.max(1, Math.min(MAX_SEGMENTS, Math.round(raw)));
-        segmentsInput.value = String(n);
-        if (clamp) segmentsNum.value = String(n);
+        const n = setSegmentsFields(raw);
         draft.regions = adjacentRegions(draft.regions[0] || { start: item.start, length: item.length }, n, source(), cap());
         if (active >= n) active = n - 1;
         paint();
@@ -1519,7 +1528,7 @@ function openRegionEditor(node, item, save) {
     durationNum.addEventListener("input", () => applyDurationNum(false));
     durationNum.addEventListener("change", () => applyDurationNum(true));
     segmentsInput.addEventListener("input", () => {
-        const n = Math.max(1, Math.min(MAX_SEGMENTS, Math.round(Number(segmentsInput.value) || 1)));
+        const n = setSegmentsFields(segmentsInput.value);
         draft.regions = adjacentRegions(draft.regions[0] || { start: item.start, length: item.length }, n, source(), cap());
         if (active >= n) active = n - 1;
         paint();
@@ -1647,7 +1656,7 @@ function openRegionEditor(node, item, save) {
         item.start = item.regions[0]?.start || 0;
         item.length = item.regions[0]?.length || 0;
         setBuilderDuration(node, durationInput.value, false);
-        setBuilderSegments(node, segmentsInput.value, true);
+        setBuilderSegments(node, currentSegments(), true);
         save();
         close();
     });

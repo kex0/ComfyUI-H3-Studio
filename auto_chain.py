@@ -16,7 +16,7 @@ from .chain_inputs import (
     MAX_SEGMENTS, clips_to_reuse, collect_music_video_reference_images,
     collect_segment_models, segment_prompt_specs,
 )
-from .latent_math import CONTEXT_TO_STEPS, loop_wrap_start_frames, pixel_frames
+from .latent_math import CONTEXT_TO_STEPS, FPS, loop_wrap_start_frames, pixel_frames
 from .spectrum_join import attach_spectrum_join_prefix
 
 PNG_PREFIX = "video/h3_auto_chain"
@@ -240,12 +240,12 @@ class H3StudioAutoChain:
                 "tooltip": "Generation height in pixels. Must stay constant for the whole chain. Tested default is 768.",
             }),
             "duration": ("FLOAT", {
-                "default": 10.0, "min": 0.25, "max": 150.0, "step": 0.1,
+                "default": 10.0, "min": 0.25, "max": 150.0, "step": 0.001, "round": 0.001,
                 "tooltip": "Requested length of EACH clip in seconds at H3's native 24 fps. H3 snaps upward to its 17k+5 frame grid (10.0 s -> 243 frames ~= 10.125 s). Every segment uses this duration.",
             }),
             "segments": ("INT", {
                 "default": 3, "min": 1, "max": MAX_SEGMENTS, "step": 1,
-                "tooltip": "How many story clips to generate. Clip 1 is Ref2VA Start (optional <Picture N> stills); clips 2..N-1 are Continue; clip N is Finish. The prompt document must contain that many ## Clip sections. Empty later model sockets reuse model_1. seamless_loop adds one extra Loop clip after these and does not count toward this number.",
+                "tooltip": "How many story clips to generate. Clip 1 is Ref2VA Start (optional <Picture N> stills); clips 2..N-1 are Continue; clip N is Finish. The prompt document must contain that many ## Clip sections. Models come from the Builder pack. seamless_loop adds one extra Loop clip after these and does not count toward this number.",
             }),
             "prompt": ("STRING", {
                 "multiline": True, "default": "", "dynamicPrompts": False,
@@ -293,7 +293,7 @@ class H3StudioAutoChain:
                 "tooltip": "When freeze_overlap is on, the last N frozen video steps get a light denoise ramp so the first kept frames are not a hard inpaint edge. 0 = hard freeze (can look overcooked just after the overlap). 2 is the starting point.",
             }),
             "latent_prefix": ("STRING", {
-                "default": "h3_continuous/clip",
+                "default": "h3_auto_chain/clip",
                 "tooltip": "Output path prefix relative to ComfyUI/output. Clip 1 is saved as <prefix>_00001.safetensors, clip 2 as _00002, and so on. Re-running with the same prefix overwrites those slots. resume_from_clip loads earlier slots from this prefix.",
             }),
             "resume_from_clip": ("INT", {
@@ -319,10 +319,8 @@ class H3StudioAutoChain:
         segments_spec = required.pop("segments", None)
         loop_prompt_spec = required.pop("loop_prompt", None)
         prompt_specs = {}
-        for i in range(1, MAX_SEGMENTS + 1):
-            spec = required.pop(f"prompt_{i}", None)
-            if spec:
-                prompt_specs[f"prompt_{i}"] = spec
+        for key in [name for name in list(required) if str(name).startswith("prompt_")]:
+            prompt_specs[key] = required.pop(key)
         optional = {}
         if duration_spec:
             optional["duration"] = duration_spec
@@ -370,7 +368,6 @@ class H3StudioAutoChain:
                 raise ValueError("h3_studio: segments is missing")
             kwargs["duration"] = float(kwargs["duration"])
             kwargs["segments"] = int(kwargs["segments"])
-            kwargs["prompt"] = ""
         else:
             duration, segments = duration_and_segments_from_pack_or_prompt(
                 pack, kwargs.get("prompt") or "", need_segments=True,
@@ -383,21 +380,37 @@ class H3StudioAutoChain:
         return self._generate_chain(**kwargs)
 
     def _generate_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
-                 width, height, duration, segments, context_frames="22",
+                 width, height, duration, segments=None, context_frames="22",
                  handover_preset="Balanced", save_segment_latents=True, save_clip_videos=True,
                  freeze_overlap=True, overlap_soft_steps=2,
-                 latent_prefix="h3_continuous/clip", resume_from_clip=1,
+                 latent_prefix="h3_auto_chain/clip", resume_from_clip=1,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0,
                  max_safe_tail_bridge_frames=2,
                  save_images_to_disk=False,
                  seamless_loop=False, loop_prompt="", prompt="",
                  model_loop=None,
-                 unique_id=None, pack=None, **kwargs):
+                 unique_id=None, pack=None, clip_fix=False, clip_index="", **kwargs):
         from .nodes import (
             H3ContinuousAnalyzeHandoverV11, H3ContinuousContinueV11,
             H3ContinuousLoadLatent, H3ContinuousSaveLatent, H3ContinuousStartV11,
             _saved_chain_file,
         )
+
+        if clip_fix:
+            return self._generate_fix_chain(
+                model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
+                width, height, duration, context_frames=context_frames,
+                handover_preset=handover_preset, save_segment_latents=save_segment_latents,
+                save_clip_videos=save_clip_videos, freeze_overlap=freeze_overlap,
+                overlap_soft_steps=overlap_soft_steps, latent_prefix=latent_prefix,
+                video_crossfade_frames=video_crossfade_frames,
+                audio_crossfade_ms=audio_crossfade_ms,
+                max_safe_tail_bridge_frames=max_safe_tail_bridge_frames,
+                save_images_to_disk=save_images_to_disk, seamless_loop=seamless_loop,
+                loop_prompt=loop_prompt, prompt=prompt, model_loop=model_loop,
+                unique_id=unique_id, pack=pack, clip_index=clip_index,
+                segments=segments, **kwargs,
+            )
 
         segments = int(segments)
         if segments < 1 or segments > MAX_SEGMENTS:
@@ -744,6 +757,299 @@ class H3StudioAutoChain:
         keep_notes = (segments + (1 if seamless_loop else 0)) * 3
         if notes:
             info += " | " + " ; ".join(notes[-keep_notes:])
+        _LOG.info("h3_continuous: %s", info)
+        return pack_image_output(images, frames_dir, audio, info, last_latent, last_handover)
+
+    def _generate_fix_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
+                 width, height, duration, context_frames="22",
+                 handover_preset="Balanced", save_segment_latents=True, save_clip_videos=True,
+                 freeze_overlap=True, overlap_soft_steps=2,
+                 latent_prefix="h3_auto_chain/clip",
+                 video_crossfade_frames=4, audio_crossfade_ms=15.0,
+                 max_safe_tail_bridge_frames=2, save_images_to_disk=False,
+                 seamless_loop=False, loop_prompt="", prompt="", model_loop=None,
+                 unique_id=None, pack=None, clip_index="", segments=None, **kwargs):
+        from .clip_fix_chain import (
+            clip_fix_neighbors, expand_fix_clip, expand_fix_loop, should_regen_loop,
+        )
+        from .clip_fixer import prepare_clip_fix
+        from .latent_math import steps_for_pixel_frames
+        from .nodes import (
+            H3ContinuousAnalyzeHandoverV11, H3ContinuousContinueV11,
+            H3ContinuousLoadLatent, H3ContinuousSaveLatent, H3ContinuousStartV11,
+            _read_safetensors_metadata, _saved_chain_file,
+        )
+        from .png_sequence import (
+            node_temp_frames_dir, pack_image_output, require_image_ram, warn_disk_budget,
+        )
+        from .song_math import grid_frame_count
+
+        if pack is not None:
+            from .pack import require_pack
+            pack = require_pack(pack)
+            model_1 = pack["models"][0]["model"]
+        reference_images = collect_music_video_reference_images(kwargs)
+        per_clip = bool(kwargs.pop("clip_fix_per_clip", False))
+        loop_hint = bool(seamless_loop or (pack or {}).get("loop"))
+        segments_hint = None
+        if segments is not None:
+            try:
+                segments_hint = int(segments)
+            except (TypeError, ValueError):
+                segments_hint = None
+        if segments_hint is None and pack is not None and pack.get("segments") is not None:
+            segments_hint = int(pack["segments"])
+        prepared = prepare_clip_fix(
+            latent_prefix, prompt, clip_index,
+            loop_hint=loop_hint, segments_hint=segments_hint, max_story=MAX_SEGMENTS,
+            kwargs=kwargs, per_clip_segments=segments_hint if per_clip else None,
+        )
+        story_n = prepared["story_n"]
+        has_loop = prepared["has_loop"]
+        regen = prepared["regen"]
+        saved_set = set(prepared["saved"])
+        regen_loop = should_regen_loop(regen, story_n, has_loop)
+        context_frames = str(context_frames)
+        freeze_overlap = bool(freeze_overlap)
+        overlap_soft_steps = int(overlap_soft_steps)
+        save_clip_videos = bool(save_clip_videos)
+        save_images_to_disk = bool(save_images_to_disk)
+        n_png = grid_frame_count(duration) * (story_n + (1 if has_loop else 0))
+        extra = (
+            f"Auto Chain clip fix: {len(regen)} clip(s) / {story_n} on disk"
+            + (" + loop" if regen_loop else "")
+        )
+        require_image_ram(n_png, width, height, save_images_to_disk)
+        out_frames = None
+        if save_images_to_disk:
+            warn_disk_budget(n_png, width, height, unique_id=unique_id, extra=extra)
+            out_frames = node_temp_frames_dir(PNG_PREFIX, unique_id)
+
+        start = H3ContinuousStartV11()
+        cont = H3ContinuousContinueV11()
+        analyzer = H3ContinuousAnalyzeHandoverV11()
+        saver = H3ContinuousSaveLatent()
+        loader = H3ContinuousLoadLatent()
+        notes = [f"backup {prepared['backup_dir']}"]
+        last_latent = None
+        last_handover = None
+        previous_latent = None
+        identity_frame = None
+        generated_this_run = set()
+        loop_end_latent = None
+        loop_start_trim = 0
+        loop_end_frames = pixel_frames(CONTEXT_TO_STEPS[int(context_frames)]) if has_loop else 0
+
+        def load_slot(index, decode_identity=False):
+            path = _saved_chain_file(latent_prefix, index)
+            latent, resolved, info, handover = loader.load(path, clip_index=0)
+            latent = _cpu_av_latent(latent)
+            identity = None
+            if decode_identity:
+                images = _decode_video(video_vae, latent)
+                identity = _overlap_identity_frame(
+                    images, latent, context_frames, handover,
+                )
+                del images
+                _release_loaded_models()
+            return latent, resolved, handover, identity, info
+
+        if has_loop:
+            loop_end_latent, _p, _h, _id, _info = load_slot(1, decode_identity=False)
+            loop_start_trim = _loop_start_trim_frames(loop_end_latent, context_frames)
+
+        for clip_index_n in regen:
+            comfy.model_management.throw_exception_if_processing_interrupted()
+            i = clip_index_n - 1
+            clip_prompt = expand_fix_clip(prompt, clip_index_n, kwargs=kwargs)
+            resolved = _resolve_clip_pack(pack, clip_prompt)
+            if resolved is not None:
+                clip_prompt = resolved["prompt"]
+                clip_model = resolved["model"]
+                pack_refs = _pack_ref_kwargs(resolved, audio_vae)
+                clip_images = _start_reference_images(resolved) if i == 0 else (resolved["pictures"] or [])
+            else:
+                clip_model = model_loop if (model_loop is not None and clip_index_n == story_n + 1) else model_1
+                if pack is None:
+                    models = collect_segment_models(story_n, model_1, kwargs)
+                    clip_model = models[i] if i < len(models) else model_1
+                pack_refs = {}
+                clip_images = reference_images
+            existing_path = _saved_chain_file(latent_prefix, clip_index_n)
+            metadata, _old = _read_safetensors_metadata(existing_path)
+            grid_frames = int(metadata.get("frame_count") or 0)
+            clip_duration = float(grid_frames) / FPS if grid_frames else float(duration)
+            prev_i, next_i = clip_fix_neighbors(clip_index_n, regen, saved_set)
+            role = _clip_role(clip_index_n, story_n)
+            _release_loaded_models()
+            if clip_index_n > 1:
+                if prev_i not in generated_this_run or previous_latent is None:
+                    _progress(unique_id, f"Loading saved clip {prev_i} (previous context)")
+                    previous_latent, _p, last_handover, identity_frame, info = load_slot(
+                        prev_i, decode_identity=True,
+                    )
+                    notes.append(f"prev clip {prev_i} {info}")
+            end_latent = None
+            end_skip = None
+            if next_i is not None:
+                _progress(unique_id, f"Loading saved clip {next_i} (next context)")
+                end_latent, end_path, _h, _id, end_info = load_slot(next_i, decode_identity=False)
+                end_meta, _ = _read_safetensors_metadata(end_path)
+                end_skip = steps_for_pixel_frames(int(end_meta.get("head_context_frames") or 0))
+                notes.append(f"next clip {next_i} {end_info}")
+            _progress(unique_id, f"Clip {clip_index_n}/{story_n} ({role}) — encoding")
+            if clip_index_n == 1:
+                start_still = _pack_first_frame(pack)
+                positive, empty = start.build(
+                    clip, video_vae, clip_prompt, width, height, clip_duration,
+                    first_frame=start_still, last_frame=None,
+                    reference_images=clip_images,
+                    **pack_refs,
+                )
+                head_context = 0
+            else:
+                extra_end = {}
+                if end_latent is not None:
+                    extra_end["end_latent"] = end_latent
+                    extra_end["end_skip_steps"] = end_skip
+                positive, empty, head_context, _ignored_tail, handover_info = cont.build(
+                    clip, video_vae, previous_latent, clip_prompt, width, height, clip_duration,
+                    context_frames=context_frames, handover_mode="auto",
+                    alignment_mode="phase_aligned_extended",
+                    handover=last_handover, last_frame=None,
+                    reference_images=clip_images, freeze_overlap=freeze_overlap,
+                    overlap_soft_steps=overlap_soft_steps, identity_frame=identity_frame,
+                    **extra_end, **pack_refs,
+                )
+                notes.append(f"clip {clip_index_n} {handover_info}")
+            del end_latent
+            _release_loaded_models()
+            _progress(unique_id, f"Clip {clip_index_n}/{story_n} ({role}) — sampling")
+            sampled = _sample_segment(
+                clip_model, positive, sampler, sigmas, _segment_noise(noise, i), empty,
+                join_prefix=(role != "Start"),
+            )
+            last_latent = _cpu_av_latent(sampled)
+            del sampled, empty
+            _release_loaded_models()
+            _progress(unique_id, f"Clip {clip_index_n}/{story_n} ({role}) — handover decode")
+            images = _decode_video(video_vae, last_latent)
+            if has_loop and clip_index_n == 1:
+                loop_end_latent = last_latent
+                loop_start_trim = _loop_start_trim_frames(loop_end_latent, context_frames)
+            handover, status, *_rest = analyzer.analyze(
+                images, preset=handover_preset, context_frames=context_frames,
+            )
+            clip_audio = _decode_audio(audio_vae, last_latent) if save_clip_videos else None
+            last_handover = handover
+            previous_latent = last_latent
+            identity_frame = _overlap_identity_frame(
+                images, last_latent, context_frames, handover,
+            )
+            del positive
+            latent_path, save_info = saver.save(
+                last_latent, latent_prefix, clip_index=clip_index_n,
+                handover=handover, head_context_frames=int(head_context or 0),
+            )
+            generated_this_run.add(clip_index_n)
+            notes.append(f"clip {clip_index_n} {status} | saved {save_info}")
+            if save_clip_videos:
+                preview = _write_clip_preview(images, latent_prefix, clip_index_n, audio=clip_audio)
+                notes.append(f"clip {clip_index_n} preview {preview}")
+            del images, clip_audio
+            _release_loaded_models()
+
+        if regen_loop:
+            if loop_end_latent is None:
+                loop_end_latent, _p, _h, _id, _info = load_slot(1, decode_identity=False)
+                loop_start_trim = _loop_start_trim_frames(loop_end_latent, context_frames)
+            if previous_latent is None or story_n not in generated_this_run:
+                previous_latent, _p, last_handover, identity_frame, info = load_slot(
+                    story_n, decode_identity=True,
+                )
+                notes.append(f"prev clip {story_n} {info}")
+            loop_index = story_n + 1
+            loop_text = expand_fix_loop(prompt, loop_prompt)
+            loop_meta, _ = _read_safetensors_metadata(_saved_chain_file(latent_prefix, loop_index))
+            loop_frames = int(loop_meta.get("frame_count") or 0)
+            loop_duration = float(loop_frames) / FPS if loop_frames else float(duration)
+            loop_resolved = _resolve_clip_pack(pack, loop_text)
+            if loop_resolved is not None:
+                loop_text = loop_resolved["prompt"]
+                loop_model = loop_resolved["model"]
+                loop_refs = _pack_ref_kwargs(loop_resolved, audio_vae)
+                loop_images = loop_resolved["pictures"]
+            else:
+                loop_model = model_loop if model_loop is not None else model_1
+                loop_refs = {}
+                loop_images = reference_images
+            _release_loaded_models()
+            _progress(unique_id, f"Loop clip {loop_index} — encoding")
+            positive, empty, head_context, _ignored_tail, handover_info = cont.build(
+                clip, video_vae, previous_latent, loop_text, width, height, loop_duration,
+                context_frames=context_frames, handover_mode="auto",
+                alignment_mode="phase_aligned_extended",
+                handover=last_handover, last_frame=None,
+                reference_images=loop_images, end_latent=loop_end_latent,
+                freeze_overlap=freeze_overlap, overlap_soft_steps=overlap_soft_steps,
+                identity_frame=identity_frame,
+                **loop_refs,
+            )
+            notes.append(f"loop {handover_info}")
+            _release_loaded_models()
+            _progress(unique_id, f"Loop clip {loop_index} — sampling")
+            sampled = _sample_segment(
+                loop_model, positive, sampler, sigmas, _segment_noise(noise, story_n), empty,
+                join_prefix=True,
+            )
+            last_latent = _cpu_av_latent(sampled)
+            del sampled, empty
+            _release_loaded_models()
+            images = _decode_video(video_vae, last_latent)
+            handover, status, *_rest = analyzer.analyze(
+                images, preset=handover_preset, context_frames=context_frames,
+            )
+            clip_audio = _decode_audio(audio_vae, last_latent) if save_clip_videos else None
+            last_handover = handover
+            del positive
+            latent_path, save_info = saver.save(
+                last_latent, latent_prefix, clip_index=loop_index,
+                handover=handover, head_context_frames=int(head_context or 0),
+            )
+            notes.append(f"loop {status} | saved {save_info}")
+            if save_clip_videos:
+                preview = _write_clip_preview(images, latent_prefix, loop_index, audio=clip_audio)
+                notes.append(f"loop preview {preview}")
+            del images, clip_audio
+            _release_loaded_models()
+
+        last_slot = story_n + (1 if has_loop else 0)
+        saved_paths = [_saved_chain_file(latent_prefix, n) for n in range(1, last_slot + 1)]
+        if has_loop and loop_end_latent is not None and not loop_start_trim:
+            loop_start_trim = _loop_start_trim_frames(loop_end_latent, context_frames)
+        images, audio, stitch_info, frames_dir = _stitch_saved_to_av(
+            video_vae, audio_vae, saved_paths,
+            video_crossfade_frames=video_crossfade_frames,
+            audio_crossfade_ms=audio_crossfade_ms,
+            max_safe_tail_bridge_frames=max_safe_tail_bridge_frames,
+            unique_id=unique_id,
+            last_as_final_clip=True,
+            close_loop=has_loop,
+            loop_start_trim_frames=loop_start_trim if has_loop else 0,
+            loop_overlap_frames=loop_end_frames,
+            frames_dir=out_frames,
+        )
+        _release_loaded_models()
+        done_clips = story_n + (1 if has_loop else 0)
+        _progress(unique_id, f"Done — {done_clips} clip(s) stitched" + (" (loop)" if has_loop else ""))
+        loop_note = "seamless loop | " if has_loop else ""
+        info = (
+            f"auto chain clip fix | clips {','.join(str(n) for n in regen)} | {loop_note}"
+            f"{story_n} clip(s) | backup {prepared['backup_dir']} | "
+            f"{'png ' + str(frames_dir) if frames_dir else 'IMAGE in RAM'} | {stitch_info}"
+        )
+        if notes:
+            info += " | " + " ; ".join(notes[-done_clips * 3:])
         _LOG.info("h3_continuous: %s", info)
         return pack_image_output(images, frames_dir, audio, info, last_latent, last_handover)
 

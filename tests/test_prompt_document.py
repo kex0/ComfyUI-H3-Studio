@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from prompt_document import (
     assemble_auto_chain_document,
     assemble_music_video_document,
+    clip_body,
     document_has_loop,
     duration_and_segments_from_pack_or_prompt,
     expand_clip,
@@ -239,6 +240,32 @@ def test_duration_and_segments_from_pack_or_prompt():
     )
     assert duration == 10.125
     assert segments is None
+    partial = (
+        "## Clip 11 — Continue\n"
+        "duration_seconds: 8.708\n"
+        "summary:\na\n"
+        "retention_analysis:\nx\n"
+        "detailed_description:\nshot\n"
+        "overall_soundscape:\na\n"
+        "non_diegetic_music:\nN/A\n"
+        "\n"
+        "## Clip 12 — Continue\n"
+        "duration_seconds: 6.583\n"
+        "summary:\nb\n"
+        "retention_analysis:\nx\n"
+        "detailed_description:\nshot\n"
+        "overall_soundscape:\na\n"
+        "non_diegetic_music:\nN/A\n"
+    )
+    duration, segments = duration_and_segments_from_pack_or_prompt(
+        {"duration": 10.0, "segments": 31}, partial, need_segments=True,
+    )
+    assert duration == 8.708
+    assert segments == 2
+    duration, _segments = duration_and_segments_from_pack_or_prompt(
+        {}, partial, need_segments=False,
+    )
+    assert duration == 8.708
     try:
         duration_and_segments_from_pack_or_prompt({}, "", need_segments=True)
     except ValueError as exc:
@@ -315,3 +342,54 @@ def test_assemble_music_video_keeps_per_clip_subjects():
     assert "<Picture 2>" in parsed["clips"][1]["local_subjects"]
     assert "<Picture 1>" not in parsed["clips"][1]["local_subjects"]
     assert "covering 8.208–18.333" in expand_clip(parsed, 2, song_audio=True)
+
+
+def test_assemble_after_merge_preserves_untouched_lyrics():
+    parsed = parse_prompt_document(MV)
+    clips = []
+    for clip in parsed["clips"]:
+        body = clip_body(clip)
+        if int(clip["index"]) == 2:
+            body = body.replace("Continues singing", "REWRITTEN")
+        clips.append({
+            "index": clip["index"],
+            "time": clip["time"],
+            "duration_seconds": clip["duration_seconds"],
+            "slice": clip["slice"],
+            "audio": clip["audio"],
+            "lyrics": clip["lyrics"],
+            "prompt": body,
+        })
+    assembled = assemble_music_video_document(10.125, clips)
+    roundtrip = parse_prompt_document(assembled, mode="music_video")
+    assert roundtrip["clips"][0]["lyrics"] == parsed["clips"][0]["lyrics"]
+    assert roundtrip["clips"][1]["lyrics"] == parsed["clips"][1]["lyrics"]
+    assert roundtrip["clips"][0]["time"] == parsed["clips"][0]["time"]
+    assert "REWRITTEN" in clip_body(roundtrip["clips"][1])
+    assert "Opens singing" in clip_body(roundtrip["clips"][0])
+    partial = assemble_music_video_document(10.125, [{
+        "index": 11,
+        "time": (90.0, 99.125),
+        "duration_seconds": 10.125,
+        "slice": 81.0,
+        "audio": (81.0, 91.125),
+        "lyrics": "[01:32.000-01:34.000] later",
+        "prompt": "subject_definitions:\nx\nsummary:\nfix\nretention_analysis:\nx\n"
+                  "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n",
+    }])
+    assert "## Clip 11 — Continue" in partial
+    assert "lyrics:\n[01:32.000-01:34.000] later" in partial
+    clips_only = assemble_music_video_document(10.125, [{
+        "index": 11,
+        "time": (90.0, 99.125),
+        "duration_seconds": 10.125,
+        "slice": 81.0,
+        "audio": (81.0, 91.125),
+        "lyrics": "[01:32.000-01:34.000] later",
+        "prompt": "subject_definitions:\nx\nsummary:\nfix\nretention_analysis:\nx\n"
+                  "detailed_description:\nshot\noverall_soundscape:\na\nnon_diegetic_music:\nN/A\n",
+    }], header=False)
+    assert clips_only.startswith("## Clip 11 — Continue")
+    assert "H3 Studio prompt" not in clips_only
+    assert "mode: music_video" not in clips_only
+    assert "segments:" not in clips_only

@@ -1,6 +1,7 @@
 """Segment-count helpers for the Auto Chain node. No ComfyUI imports."""
 
-MAX_SEGMENTS = 12
+MAX_SEGMENTS = 999
+LEGACY_SEGMENT_WIDGETS = 12
 
 
 def collect_segment_values(segments, kwargs, prefix):
@@ -35,7 +36,7 @@ def clips_to_reuse(resume_from_clip, segments, seamless_loop=False):
 
 def segment_prompt_specs():
     specs = {}
-    for i in range(1, MAX_SEGMENTS + 1):
+    for i in range(1, LEGACY_SEGMENT_WIDGETS + 1):
         if i == 1:
             tip = (
                 "Clip 1 (Start) prompt. Describe the action, dialogue, camera and audio for the first "
@@ -57,7 +58,7 @@ def segment_prompt_specs():
 
 def segment_model_specs():
     specs = {}
-    for i in range(2, MAX_SEGMENTS + 1):
+    for i in range(2, LEGACY_SEGMENT_WIDGETS + 1):
         specs[f"model_{i}"] = ("MODEL", {
             "tooltip": (
                 f"Optional full patched H3 MODEL for clip {i}: Checkpoint → LoRA → Sigma Shift → "

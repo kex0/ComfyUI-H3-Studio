@@ -230,6 +230,19 @@ def story_clips(parsed: dict) -> list[dict]:
     return [clip for clip in parsed.get("clips") or [] if not clip.get("is_loop")]
 
 
+def clip_body(clip) -> str:
+    prompt = str((clip or {}).get("prompt") or "").strip()
+    if prompt:
+        return prompt if prompt.endswith("\n") else prompt + "\n"
+    sections = (clip or {}).get("sections") or {}
+    parts = []
+    for head in SECTION_HEADS:
+        parts.append(f"{head}:")
+        parts.append(sections.get(head) or "")
+        parts.append("")
+    return "\n".join(parts).strip() + "\n"
+
+
 def _filter_subject_lines(block: str, clip_index: int, is_loop: bool,
                           song_audio=False, time_range=None, duration=None) -> str:
     kept = []
@@ -372,13 +385,24 @@ def duration_and_segments_from_pack_or_prompt(pack, prompt, *, need_segments=Fal
     """Read clip length (and Auto Chain clip count) from the prompt, else the Builder pack."""
     text = str(prompt or "").strip()
     duration, segments = _header_timing(text)
-    if need_segments and looks_like_unified(text):
+    parsed = None
+    if looks_like_unified(text):
         try:
-            story = story_clips(parse_prompt_document(text, mode="auto_chain"))
-            if story:
-                segments = len(story)
+            parsed = parse_prompt_document(text)
         except ValueError:
-            pass
+            parsed = None
+    if need_segments and parsed:
+        story = story_clips(parsed)
+        if story:
+            segments = len(story)
+    if duration is None and parsed:
+        secs = [
+            float(clip["duration_seconds"])
+            for clip in parsed.get("clips") or []
+            if clip.get("duration_seconds") is not None
+        ]
+        if secs:
+            duration = max(secs)
     if duration is None and isinstance(pack, dict) and pack.get("duration") is not None:
         duration = float(pack["duration"])
     if need_segments and segments is None and isinstance(pack, dict) and pack.get("segments") is not None:
@@ -392,20 +416,23 @@ def duration_and_segments_from_pack_or_prompt(pack, prompt, *, need_segments=Fal
     return float(duration), None
 
 
-def assemble_music_video_document(max_duration, clips) -> str:
+def assemble_music_video_document(max_duration, clips, *, header=True) -> str:
     """clips: dicts with index, time, duration_seconds, slice, audio, lyrics, prompt."""
     items = list(clips or [])
-    duration = float(max_duration)
-    lines = [
-        "H3 Studio prompt",
-        "mode: music_video",
-        f"duration: {duration:.3f}",
-        f"segments: {len(items)}",
-        "",
-    ]
+    lines = []
+    if header:
+        duration = float(max_duration)
+        lines.extend([
+            "H3 Studio prompt",
+            "mode: music_video",
+            f"duration: {duration:.3f}",
+            f"segments: {len(items)}",
+            "",
+        ])
     for i, clip in enumerate(items, 1):
-        role = "Start" if i == 1 else "Continue"
-        lines.append(f"## Clip {int(clip.get('index') or i)} — {role}")
+        index = int(clip.get("index") or i)
+        role = "Start" if index == 1 else "Continue"
+        lines.append(f"## Clip {index} — {role}")
         time_range = clip.get("time")
         if time_range:
             lines.append(f"time: {float(time_range[0]):.3f}-{float(time_range[1]):.3f}")
@@ -427,26 +454,31 @@ def assemble_music_video_document(max_duration, clips) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def assemble_auto_chain_document(duration, segments, loop, bodies) -> str:
-    """bodies: iterable of (role, six-section body, is_loop)."""
+def assemble_auto_chain_document(duration, segments, loop, bodies, *, header=True) -> str:
+    """bodies: iterable of (role, six-section body, is_loop[, clip_index])."""
     items = list(bodies)
-    lines = [
-        "H3 Studio prompt",
-        "mode: auto_chain",
-        f"duration: {float(duration):.2f}",
-        f"segments: {int(segments)}",
-        f"loop: {'true' if loop else 'false'}",
-        "",
-    ]
+    lines = []
+    if header:
+        lines.extend([
+            "H3 Studio prompt",
+            "mode: auto_chain",
+            f"duration: {float(duration):.2f}",
+            f"segments: {int(segments)}",
+            f"loop: {'true' if loop else 'false'}",
+            "",
+        ])
     story_i = 0
-    for role, body, is_loop_flag in items:
+    for item in items:
+        role, body, is_loop_flag = item[0], item[1], item[2]
+        index = item[3] if len(item) > 3 else None
         sections = split_sections(body)
         if is_loop_flag:
             lines.append("## Loop — return to Clip 1")
         else:
             story_i += 1
             label = str(role or "Continue").replace(" (final)", "")
-            lines.append(f"## Clip {story_i} — {label}")
+            n = int(index) if index is not None else story_i
+            lines.append(f"## Clip {n} — {label}")
         for head in SECTION_HEADS:
             lines.append(f"{head}:")
             lines.append(sections.get(head) or "")

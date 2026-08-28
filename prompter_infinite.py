@@ -16,8 +16,8 @@ from .lyric_timing import (
 )
 from .pack import format_builder_dump, parse_prompt_citations, require_pack
 from .prompt_document import (
-    assemble_auto_chain_document, assemble_music_video_document,
-    duration_and_segments_from_pack_or_prompt,
+    assemble_auto_chain_document, assemble_music_video_document, clip_body,
+    duration_and_segments_from_pack_or_prompt, parse_prompt_document, story_clips,
 )
 from .prompter_llama import (
     CATALOG_LABEL, LOCAL_GGUF_LABEL, find_llama_cli, find_llama_server,
@@ -293,13 +293,88 @@ def window_clip_fields(window: dict) -> dict:
     }
 
 
-def _mv_user_turn(inventory, plan, clip, previous_body) -> str:
+def _rewrite_addendum(existing_body="", following_body="") -> list[str]:
+    parts = []
+    if existing_body:
+        parts.extend([
+            "",
+            "Existing clip body to revise:",
+            str(existing_body).rstrip(),
+            "Apply the user plan. Do not rewrite lyrics wording, time:, audio:, or locked dialogue tags.",
+        ])
+    if following_body:
+        parts.extend([
+            "",
+            "Following clip (do not rewrite; land so this body can continue):",
+            str(following_body).rstrip(),
+        ])
+    return parts
+
+
+def parsed_clip_job(clip) -> dict:
+    item = dict(clip)
+    lyrics = str(clip.get("lyrics") or "").strip()
+    item["prompt"] = clip_body(clip)
+    item["instrumental"] = (
+        not lyrics or lyrics == "(instrumental)" or is_instrumental_marker(lyrics)
+    )
+    if item.get("duration_seconds") is None and item.get("time"):
+        t0, t1 = item["time"]
+        item["duration_seconds"] = float(t1) - float(t0)
+    if item.get("audio") is None and item.get("slice") is not None and item.get("duration_seconds") is not None:
+        t0 = float(item["slice"])
+        item["audio"] = (t0, t0 + float(item["duration_seconds"]))
+    if item.get("audio") is None and item.get("time"):
+        item["audio"] = item["time"]
+    return item
+
+
+def load_clip_fix_seed(pack) -> dict:
+    seed = str(pack.get("seed_prompt") or "").strip()
+    if not seed:
+        raise ValueError("h3_studio: clip_fix pack is missing seed_prompt")
+    parsed = parse_prompt_document(seed)
+    targets = [int(n) for n in (pack.get("fix_clips") or [])]
+    if not targets:
+        raise ValueError("h3_studio: clip_fix pack is missing fix_clips")
+    story = story_clips(parsed)
+    available = {int(clip["index"]) for clip in story}
+    missing = [n for n in targets if n not in available]
+    if missing:
+        raise ValueError(f"h3_studio: seed_prompt has no clip {missing[0]}")
+    song_audio = parsed.get("mode") == "music_video" or any(
+        clip.get("time") or clip.get("lyrics") for clip in parsed.get("clips") or []
+    )
+    items = [parsed_clip_job(clip) for clip in parsed.get("clips") or []]
+    if song_audio:
+        for clip in items:
+            if clip.get("is_loop"):
+                continue
+            if not clip.get("time") or not clip.get("audio") or clip.get("duration_seconds") is None:
+                raise ValueError(
+                    f"h3_studio: clip {int(clip['index'])} is missing time/audio headers"
+                )
+    return {
+        "parsed": parsed,
+        "rewrite": targets,
+        "song_audio": song_audio,
+        "items": items,
+    }
+
+
+def _mv_user_turn(inventory, plan, clip, previous_body, existing_body="",
+                  following_body="") -> str:
     index = int(clip["index"])
     role = "Start" if index == 1 else "Continue"
     t0, t1 = clip["time"]
     a0, a1 = clip["audio"]
     lyrics = str(clip.get("lyrics") or "").strip() or "(instrumental)"
     tags = [] if clip.get("instrumental") else locked_d_tags(lyrics)
+    job = (
+        f"Revise the six-section body for clip {index} ({role}), duration {float(clip['duration_seconds']):.2f}s."
+        if existing_body else
+        f"Write the body for clip {index} ({role}), duration {float(clip['duration_seconds']):.2f}s."
+    )
     parts = [
         "Builder dump:",
         inventory["raw"] or "(empty dump)",
@@ -307,7 +382,7 @@ def _mv_user_turn(inventory, plan, clip, previous_body) -> str:
         "User plan:",
         str(plan or "").strip() or "(no extra plan)",
         "",
-        f"Write the body for clip {index} ({role}), duration {float(clip['duration_seconds']):.2f}s.",
+        job,
         "Choose which dump Picture / Video / Model this clip needs. Identity stills that still apply must appear as <Picture N> in this clip's subject_definitions (inside the Subject line). If the dump has one identity Picture, every clip cites it. Omit unused extra stills.",
         "",
         "Locked CLIP headers (do not rewrite lyrics wording):",
@@ -335,13 +410,17 @@ def _mv_user_turn(inventory, plan, clip, previous_body) -> str:
         )
     if previous_body:
         parts.extend(["", "Previous clip body:", previous_body])
+    parts.extend(_rewrite_addendum(existing_body, following_body))
     parts.append("Output only the six-section body.")
     return "\n".join(parts)
 
 
-def _user_turn(inventory, plan, index, role, duration, previous_body, is_loop=False) -> str:
+def _user_turn(inventory, plan, index, role, duration, previous_body, is_loop=False,
+               existing_body="", following_body="") -> str:
     if is_loop:
         job = f"Write the body for the Loop clip, duration {float(duration):.2f}s."
+    elif existing_body:
+        job = f"Revise the six-section body for clip {index} ({role}), duration {float(duration):.2f}s."
     else:
         job = f"Write the body for clip {index} ({role}), duration {float(duration):.2f}s."
     parts = [
@@ -372,6 +451,7 @@ def _user_turn(inventory, plan, index, role, duration, previous_body, is_loop=Fa
         )
     if previous_body:
         parts.extend(["", "Previous clip body:", previous_body])
+    parts.extend(_rewrite_addendum(existing_body, following_body))
     parts.append("Output only the six-section body.")
     return "\n".join(parts)
 
@@ -392,25 +472,66 @@ def _flatten_cli_messages(messages) -> tuple[str, str]:
 
 
 def generate_clip_bodies(inventory, plan, segments, duration, loop, chat_fn,
-                         progress=None) -> tuple[list[tuple[str, str, str]], list[str]]:
+                         progress=None, seed_clips=None,
+                         rewrite_indices=None) -> tuple[list[tuple[str, str, str]], list[str]]:
     system = load_system_prompt()
-    jobs = []
-    for i in range(1, int(segments) + 1):
-        jobs.append((i, clip_role(i, segments, loop=loop), False))
-    if loop:
-        jobs.append((int(segments), "Loop", True))
+    rewrite = None if rewrite_indices is None else {int(n) for n in rewrite_indices}
+    if seed_clips is not None:
+        jobs = []
+        for clip in seed_clips:
+            if clip.get("is_loop"):
+                jobs.append((int(clip.get("index") or 0), "Loop", True, clip))
+                continue
+            index = int(clip["index"])
+            role = str(clip.get("role") or "").strip() or clip_role(
+                index, segments, loop=loop,
+            )
+            jobs.append((index, role, False, clip))
+    else:
+        jobs = []
+        for i in range(1, int(segments) + 1):
+            jobs.append((i, clip_role(i, segments, loop=loop), False, None))
+        if loop:
+            jobs.append((int(segments), "Loop", True, None))
     bodies = []
     notes = []
     previous = ""
-    n_jobs = len(jobs)
-    for i, (index, role, is_loop) in enumerate(jobs, 1):
+    n_jobs = sum(
+        1 for index, _role, is_loop, _clip in jobs
+        if rewrite is None or (not is_loop and index in rewrite)
+    )
+    job_i = 0
+    for index, role, is_loop, seed in jobs:
+        seed_body = clip_body(seed) if seed is not None else ""
+        skip = seed is not None and (is_loop or (rewrite is not None and index not in rewrite))
+        if skip:
+            heading = clip_heading(index, role)
+            bodies.append((heading, seed_body, role))
+            if not is_loop:
+                previous = seed_body
+            continue
+        following = ""
+        if rewrite is not None and seed_clips is not None and not is_loop:
+            later = next(
+                (item for item in seed_clips
+                 if not item.get("is_loop") and int(item["index"]) == index + 1),
+                None,
+            )
+            if later is not None and int(later["index"]) not in rewrite:
+                following = clip_body(later)
+        job_i += 1
+        clip_duration = duration
+        if seed is not None and seed.get("duration_seconds") is not None:
+            clip_duration = float(seed["duration_seconds"])
         messages = [
             {"role": "system", "content": system},
             {"role": "user", "content": _user_turn(
-                inventory, plan, index, role, duration, previous, is_loop=is_loop,
+                inventory, plan, index, role, clip_duration, previous, is_loop=is_loop,
+                existing_body=seed_body if rewrite is not None else "",
+                following_body=following,
             )},
         ]
-        label = f"Clip {i}/{n_jobs} ({role}) — writing"
+        label = f"Clip {job_i}/{n_jobs} ({role}) — writing"
         raw = _run_with_status(progress, label, lambda msgs=messages: chat_fn(msgs))
         body = strip_generated_body(raw)
         issues = validate_clip_prompt(body, inventory, index, is_loop=is_loop)
@@ -423,7 +544,7 @@ def generate_clip_bodies(inventory, plan, segments, duration, loop, chat_fn,
                 {"role": "assistant", "content": body},
                 {"role": "user", "content": repair},
             ])
-            repair_label = f"Clip {i}/{n_jobs} ({role}) — repairing"
+            repair_label = f"Clip {job_i}/{n_jobs} ({role}) — repairing"
             body = strip_generated_body(
                 _run_with_status(progress, repair_label, lambda msgs=messages: chat_fn(msgs)),
             )
@@ -438,21 +559,46 @@ def generate_clip_bodies(inventory, plan, segments, duration, loop, chat_fn,
 
 
 def generate_music_video_bodies(inventory, plan, clips, chat_fn,
-                                progress=None) -> tuple[list[dict], list[str]]:
+                                progress=None, rewrite_indices=None) -> tuple[list[dict], list[str]]:
     system = load_system_prompt(_MV_SYSTEM_PATH)
+    rewrite = None if rewrite_indices is None else {int(n) for n in rewrite_indices}
     bodies = []
     notes = []
     previous = ""
-    n_jobs = len(clips)
-    for i, clip in enumerate(clips, 1):
+    n_jobs = (
+        len(clips) if rewrite is None
+        else sum(1 for clip in clips if int(clip["index"]) in rewrite)
+    )
+    job_i = 0
+    for clip in clips:
         index = int(clip["index"])
         role = "Start" if index == 1 else "Continue"
+        seed_body = str(clip.get("prompt") or "")
+        if rewrite is not None and index not in rewrite:
+            item = dict(clip)
+            item["prompt"] = seed_body
+            bodies.append(item)
+            previous = seed_body
+            continue
+        following = ""
+        if rewrite is not None:
+            later = next(
+                (item for item in clips if int(item["index"]) == index + 1),
+                None,
+            )
+            if later is not None and int(later["index"]) not in rewrite:
+                following = str(later.get("prompt") or "")
+        job_i += 1
         tags = [] if clip.get("instrumental") else locked_d_tags(clip.get("lyrics") or "")
         messages = [
             {"role": "system", "content": system},
-            {"role": "user", "content": _mv_user_turn(inventory, plan, clip, previous)},
+            {"role": "user", "content": _mv_user_turn(
+                inventory, plan, clip, previous,
+                existing_body=seed_body if rewrite is not None else "",
+                following_body=following,
+            )},
         ]
-        label = f"Clip {i}/{n_jobs} ({role}) — writing"
+        label = f"Clip {job_i}/{n_jobs} ({role}) — writing"
         raw = _run_with_status(progress, label, lambda msgs=messages: chat_fn(msgs))
         body = strip_generated_body(raw)
         issues = validate_clip_prompt(
@@ -467,7 +613,7 @@ def generate_music_video_bodies(inventory, plan, clips, chat_fn,
                 {"role": "assistant", "content": body},
                 {"role": "user", "content": repair},
             ])
-            repair_label = f"Clip {i}/{n_jobs} ({role}) — repairing"
+            repair_label = f"Clip {job_i}/{n_jobs} ({role}) — repairing"
             body = strip_generated_body(
                 _run_with_status(progress, repair_label, lambda msgs=messages: chat_fn(msgs)),
             )
@@ -481,6 +627,27 @@ def generate_music_video_bodies(inventory, plan, clips, chat_fn,
         bodies.append(item)
         previous = body
     return bodies, notes
+
+
+def clip_fix_output_clips(clips, rewrite) -> list:
+    want = {int(n) for n in rewrite}
+    return [
+        clip for clip in clips
+        if not clip.get("is_loop") and int(clip["index"]) in want
+    ]
+
+
+def clip_fix_output_bodies(seed_clips, bodies, rewrite) -> list:
+    want = {int(n) for n in rewrite}
+    items = []
+    for seed, (_heading, body, role) in zip(seed_clips, bodies):
+        if seed.get("is_loop"):
+            continue
+        index = int(seed["index"])
+        if index not in want:
+            continue
+        items.append((role, body, False, index))
+    return items
 
 
 class H3StudioLocalInfinitePrompter:
@@ -559,11 +726,17 @@ class H3StudioLocalInfinitePrompter:
                    n_gpu_layers=99, temperature=0.6, gguf_path="", llama_server="", **_kwargs):
         pack_dump = dump_from_pack(pack) if isinstance(pack, dict) else ""
         lyrics = str(pack.get("lyrics") or "") if isinstance(pack, dict) else ""
+        seed = str(pack.get("seed_prompt") or "") if isinstance(pack, dict) else ""
+        mode = str(pack.get("prompt_mode") or "") if isinstance(pack, dict) else ""
+        fix = ",".join(
+            str(int(n)) for n in (pack.get("fix_clips") or [])
+        ) if isinstance(pack, dict) else ""
         raw = "|".join((
             str(model or ""), str(bool(allow_download)),
             str(int(n_ctx)), str(int(n_gpu_layers)), f"{float(temperature):.3f}",
             str(gguf_path or ""), str(llama_server or ""), pack_dump, lyrics,
             pack_song_sig(pack) if isinstance(pack, dict) else "",
+            mode, seed, fix,
         ))
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
@@ -575,8 +748,12 @@ class H3StudioLocalInfinitePrompter:
         if not inventory["raw"]:
             raise ValueError("h3_studio: connect H3 Studio Builder to pack")
         plan = str(pack.get("plan") or "").strip() or str(inventory.get("plan") or "").strip()
-        mv = music_video_pack_inputs(pack)
         pbar = None
+        fix = load_clip_fix_seed(pack) if str(pack.get("prompt_mode") or "") == "clip_fix" else None
+        mv_clips = None
+        ac_clips = None
+        clips = None
+        loop = False
 
         def progress(text, done=None):
             _progress(unique_id, text)
@@ -589,29 +766,56 @@ class H3StudioLocalInfinitePrompter:
             if match:
                 pbar.update_absolute(1 + int(match.group(1)))
 
-        if mv is not None:
-            song, lyrics = mv
-            duration, _unused = duration_and_segments_from_pack_or_prompt(
-                pack, dump, need_segments=False,
+        if fix is not None:
+            story_items = [clip for clip in fix["items"] if not clip.get("is_loop")]
+            clip_total = sum(1 for clip in story_items if int(clip["index"]) in set(fix["rewrite"]))
+            if clip_total < 1:
+                raise ValueError("h3_studio: clip_fix has no clips to rewrite")
+            duration = fix["parsed"].get("duration")
+            if duration is None and pack.get("duration") is not None:
+                duration = float(pack["duration"])
+            if duration is None:
+                for clip in story_items:
+                    if clip.get("duration_seconds") is not None:
+                        duration = float(clip["duration_seconds"])
+                        break
+            if duration is None:
+                raise ValueError(
+                    "h3_studio: duration is missing; set it on the Builder or in the prompt header"
+                )
+            segments = int(fix["parsed"].get("segments") or len(story_items))
+            loop = bool(fix["parsed"].get("loop")) or any(
+                clip.get("is_loop") for clip in fix["items"]
             )
-            unload_comfy_models()
-            progress("Timing confirm lyrics (wav2vec2)")
-            song_seconds = song_seconds_from_audio(song)
-            refined = refine_confirm_lyrics(
-                song["waveform"], song["sample_rate"], lyrics, song_seconds=song_seconds,
-            )
-            windows = assign_lyrics_to_windows(refined, song_seconds, duration)
-            clips = [window_clip_fields(w) for w in windows]
-            clip_total = len(clips)
-            loop = False
+            if fix["song_audio"]:
+                mv_clips = story_items
+            else:
+                ac_clips = fix["items"]
         else:
-            duration, segments = duration_and_segments_from_pack_or_prompt(
-                pack, dump, need_segments=True,
-            )
-            segments = max(1, min(int(MAX_SEGMENTS), int(segments)))
-            loop = bool(pack.get("loop")) or bool(inventory.get("loop"))
-            clip_total = segments + (1 if loop else 0)
-            clips = None
+            mv = music_video_pack_inputs(pack)
+            if mv is not None:
+                song, lyrics = mv
+                duration, _unused = duration_and_segments_from_pack_or_prompt(
+                    pack, dump, need_segments=False,
+                )
+                unload_comfy_models()
+                progress("Timing confirm lyrics (wav2vec2)")
+                song_seconds = song_seconds_from_audio(song)
+                refined = refine_confirm_lyrics(
+                    song["waveform"], song["sample_rate"], lyrics, song_seconds=song_seconds,
+                )
+                windows = assign_lyrics_to_windows(refined, song_seconds, duration)
+                clips = [window_clip_fields(w) for w in windows]
+                clip_total = len(clips)
+                loop = False
+            else:
+                duration, segments = duration_and_segments_from_pack_or_prompt(
+                    pack, dump, need_segments=True,
+                )
+                segments = max(1, min(int(MAX_SEGMENTS), int(segments)))
+                loop = bool(pack.get("loop")) or bool(inventory.get("loop"))
+                clip_total = segments + (1 if loop else 0)
+                clips = None
 
         pbar = _progress_bar(1 + clip_total, unique_id)
         gguf = resolve_gguf(
@@ -651,7 +855,17 @@ class H3StudioLocalInfinitePrompter:
                 progress("llama-server ready", done=1)
             else:
                 progress(f"llama-cli one-shot for clip 1 ({os.path.basename(gguf)})")
-            if clips is not None:
+            if mv_clips is not None:
+                filled, issues = generate_music_video_bodies(
+                    inventory, plan, mv_clips, chat, progress=progress,
+                    rewrite_indices=fix["rewrite"],
+                )
+            elif ac_clips is not None:
+                bodies, issues = generate_clip_bodies(
+                    inventory, plan, segments, duration, loop, chat, progress=progress,
+                    seed_clips=ac_clips, rewrite_indices=fix["rewrite"],
+                )
+            elif clips is not None:
                 filled, issues = generate_music_video_bodies(
                     inventory, plan, clips, chat, progress=progress,
                 )
@@ -663,15 +877,26 @@ class H3StudioLocalInfinitePrompter:
             if session is not None:
                 session.close()
 
-        if clips is not None:
-            prompts = assemble_music_video_document(duration, filled)
+        if mv_clips is not None or clips is not None:
+            if fix is not None:
+                filled = clip_fix_output_clips(filled, fix["rewrite"])
+            prompts = assemble_music_video_document(
+                duration, filled, header=fix is None,
+            )
             n_clips = len(filled)
         else:
-            prompts = assemble_auto_chain_document(
-                duration, segments, loop,
-                [(role, body, role == "Loop") for _heading, body, role in bodies],
-            )
-            n_clips = len(bodies)
+            if fix is not None:
+                items = clip_fix_output_bodies(ac_clips, bodies, fix["rewrite"])
+                prompts = assemble_auto_chain_document(
+                    duration, len(items), False, items, header=False,
+                )
+                n_clips = len(items)
+            else:
+                prompts = assemble_auto_chain_document(
+                    duration, segments, loop,
+                    [(role, body, role == "Loop") for _heading, body, role in bodies],
+                )
+                n_clips = len(bodies)
         used = server_exe or cli_exe
         progress(f"Done — {n_clips} clip(s)", done=1 + n_clips)
         note_lines = [

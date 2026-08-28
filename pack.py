@@ -221,6 +221,17 @@ def require_pack(pack) -> dict:
     if pack.get("song") is not None:
         out["song"] = pack["song"]
     out["lyrics"] = str(pack.get("lyrics") or "").strip()
+    if str(pack.get("prompt_mode") or "").strip() == "clip_fix":
+        out["prompt_mode"] = "clip_fix"
+        out["seed_prompt"] = str(pack.get("seed_prompt") or "").strip()
+        clips = []
+        seen = set()
+        for n in pack.get("fix_clips") or []:
+            n = int(n)
+            if n not in seen:
+                seen.add(n)
+                clips.append(n)
+        out["fix_clips"] = clips
     return out
 
 

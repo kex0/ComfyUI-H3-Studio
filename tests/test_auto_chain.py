@@ -20,22 +20,24 @@ def _load(name):
 def test_auto_chain_frontend_targets_release_node_class():
     text = (ROOT / "web" / "js" / "autoChainSegmentVisibility.js").read_text(encoding="utf-8")
     assert 'TARGET_CLASS = "H3StudioAutoChain"' in text
-    assert "MAX_SEGMENTS = 12" in text
-    assert "removeInput" in text
-    assert "addInput" in text
+    assert "H3StudioAutoChainClipFixer" in text
     assert "hideLegacyPromptWidgets" in text
-    assert "syncModelInputs" in text
-    assert "ensureInputAt" in text
-    assert "syncLoopWidgets" in text
+    assert "stripLegacyModelSockets" in text
+    assert "isLegacyModelSlot" in text
+    assert "removeInput" in text
+    assert "syncModelInputs" not in text
+    assert "ensureInputAt" not in text
+    assert "syncLoopWidgets" not in text
+    assert "rememberStableSize" not in text
+    assert "onResize" not in text
+    assert "snapshotVisualSize" not in text
+    assert "./nodeSize.js" not in text
     assert "loop_prompt" in text
     assert "model_loop" in text
     assert "seamless_loop" in text
-    assert "setWidgetVisible(findWidget(node, `prompt_${i}`), false)" in text
-    assert 'setWidgetVisible(findWidget(node, "loop_prompt"), false)' in text
-    assert "./nodeSize.js" in text
-    assert "captureNodeSize" in text
-    assert "restoreNodeSizeSoon" in text
-    assert "preserveNodeSize" in text
+    assert 'name === "loop_prompt"' in text
+    assert "/^prompt_\\d+$/.test(name)" in text
+    assert "/^model_\\d+$/.test(name)" in text
     assert "node.setSize([" not in text
     editor = (ROOT / "web" / "js" / "promptEditor.js").read_text(encoding="utf-8")
     assert "H3StudioAutoChain" in editor
@@ -86,12 +88,32 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "h3-studio-progress-pin" in editor
     assert "function isAdvancedAutoChain" in editor
     assert "function isMusicVideo" in editor
+    assert "function isAdvancedPromptNode" in editor
+    assert "function documentMode" in editor
+    assert "function promptHeaderLines" in editor
+    assert "function clipRole" in editor
+    assert "MUSIC_MAX_CLIP_PROMPTS = 48" in editor
+    assert "max_duration_seconds" in editor
     assert "DEFAULT_PROMPT_HEIGHT = 96" in editor
     assert "function applyDefaultPromptNodeSize" in editor
     assert "function fitPromptNodeHeight" in editor
     assert "function fitPromptNodeHeightSoon" in editor
     assert "PER_CLIP_FIELD_HEIGHT = 100" in editor
+    assert "CLIP_PICKS_HEIGHT" in editor
     assert "visibleClipEditors" in editor
+    assert "function perClipSlots" in editor
+    assert "function isClipFixer" in editor
+    assert "function storyClipIndices" in editor
+    assert "function headerHasTiming" in editor
+    assert "consecutiveFromOne" in editor
+    assert "while (next.length < segments)" in editor
+    assert "if (!prompt || !headerHasTiming(prompt.value)) return;" in editor
+    assert "perClip && !isClipFixer" in editor
+    assert "if (isClipFixer(node)) return;" in editor
+    assert "function selectPerClipSlot" in editor
+    assert "function bindEditorToWidget" in editor
+    assert "h3-studio-clip-picks" in editor
+    assert 'short: "Loop"' in editor
     assert "function orderPromptNodeWidgets" in editor
     assert "if (!isMusicVideo(node)) return;" in editor
     assert "function finishPromptNodeLayout" in editor
@@ -100,7 +122,32 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "One prompt per clip" in editor
     assert "Single prompt" in editor
     assert "syncAdvancedPromptHost" in editor
-    assert "MAX_CLIP_PROMPTS = 12" in editor
+    assert "MAX_CLIP_PROMPTS = 999" in editor
+    assert "function formatDuration" in editor
+    assert "function growPromptNodeToFit" in editor
+    assert "function restoreKeptPromptNodeSize" in editor
+    assert "function installPromptSizeLock" in editor
+    assert "function pinSizeToKept" in editor
+    assert "kept[1] - 48" in editor
+    assert "__h3SizeHold" in editor
+    assert "function setKeptSize" in (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    assert "function installSizeWatch" in (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    assert "__h3UserResizing" in (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    assert "snapshotVisualSize" in editor
+    assert "--node-height" in (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    assert "function snapshotVisualSize" in (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    size_js = (ROOT / "web" / "js" / "nodeSize.js").read_text(encoding="utf-8")
+    assert "function cssContentHeight" in size_js
+    assert "function wrapExpandToFit" in size_js
+    assert "function assignNodeSize" in size_js
+    assert "node.size[1] =" not in size_js
+    assert "bodyHeight" not in size_js
+    assert "__h3ApplyingSize" in size_js
+    assert "wrapExpandToFit" in editor
+    assert "cssContentHeight" in editor
+    assert 'const key = `${mode}|${fields.map((field) => field.name).join("|")}`' in editor
+    assert "function defaultClipHeading" in editor
+    assert "overflow-x: auto" in editor
     assert "prompt_mode" in editor
     assert "hideOriginalPromptWidget" in editor
     assert "listedWidgetValues" in editor
@@ -190,8 +237,8 @@ def test_auto_chain_frontend_targets_release_node_class():
     chain = (ROOT / "auto_chain.py").read_text(encoding="utf-8")
     assert '"prompt": ("STRING"' in chain
     assert "resolve_auto_chain_prompts" in chain
-    assert "removeInputByName" in text
-    assert 'removeInputByName(node, "model_loop")' in text
+    assert "stripLegacyModelSockets" in text
+    assert "isLegacyModelSlot" in text
     assert "last_frame" not in text
     assert "lastFrameLabel" not in text
 
@@ -248,10 +295,10 @@ def test_auto_chain_returns_images_and_audio_first():
     assert "class H3StudioAutoChain" in text
     assert "H3StudioAutoChainAdvanced" not in text
     assert 'required.pop("loop_prompt"' in text
-    assert 'required.pop(f"prompt_{i}"' in text
+    assert 'str(name).startswith("prompt_")' in text
     assert "prompt_mode" in text
     assert "document_has_loop" in text
-    assert 'kwargs["prompt"] = ""' in text
+    assert 'kwargs["prompt"] = ""' not in text
     assert 'kwargs["seamless_loop"] = document_has_loop' in text
     assert 'optional["prompt_mode"]' in text
     assert "def _clip_role" in text
@@ -310,8 +357,9 @@ def test_collect_segment_values_keeps_requested_prefix_order():
     kwargs = {"prompt_1": "a", "prompt_2": "b", "prompt_3": "c", "prompt_4": "ignored"}
     assert ci.collect_segment_values(3, kwargs, "prompt") == ["a", "b", "c"]
     assert ci.collect_segment_values(2, {"last_frame_1": None, "last_frame_2": "x"}, "last_frame") == [None, "x"]
-    assert set(ci.segment_prompt_specs()) == {f"prompt_{i}" for i in range(1, ci.MAX_SEGMENTS + 1)}
-    assert set(ci.segment_model_specs()) == {f"model_{i}" for i in range(2, ci.MAX_SEGMENTS + 1)}
+    assert set(ci.segment_prompt_specs()) == {f"prompt_{i}" for i in range(1, ci.LEGACY_SEGMENT_WIDGETS + 1)}
+    assert set(ci.segment_model_specs()) == {f"model_{i}" for i in range(2, ci.LEGACY_SEGMENT_WIDGETS + 1)}
+    assert ci.MAX_SEGMENTS == 999
     assert ci.collect_segment_models(3, "base", {"model_2": "lora_b"}) == ["base", "lora_b", "base"]
     assert ci.collect_segment_models(3, "base", {"model_1": "start", "model_3": "lora_c"}) == ["start", "base", "lora_c"]
 
@@ -320,7 +368,11 @@ def test_continue_song_audio_ref_skips_previous_generated_audio():
     text = (ROOT / "nodes.py").read_text(encoding="utf-8")
     assert "song_audio_latent=None" in text
     assert "previous generated audio skipped" in text
-    assert "song_audio_latent cannot be combined with end_latent" in text
+    assert "end_context_includes_audio" in text
+    assert "next_clip_end_keyframe_offsets" in text
+    assert "end_skip_steps=None, pack_end_audio=True" in text
+    assert "end_skip_steps=end_skip_steps, pack_end_audio=pack_end_audio" in text
+    assert "song_audio_latent cannot be combined with end_latent" not in text
     assert "HC_AUDIO_END_FRAME: float(frame_count)" in text
 
 
@@ -350,6 +402,12 @@ def test_music_video_node_contract():
     assert '"pack": ("H3_STUDIO_PACK"' in text
     assert 'required.pop("duration"' in text
     assert "duration_and_segments_from_pack_or_prompt" in text
+    assert "prompt_mode" in text
+    assert 'optional["prompt_mode"]' in text
+    assert 'optional["segments"]' in text
+    assert 'optional["duration"]' in text
+    assert '"step": 0.001, "round": 0.001' in text
+    assert 'kwargs["prompt"] = ""' not in text
     assert "parse_music_video_prompt" in text
     assert "song_audio_latent=" in text
     assert "from comfy_extras.nodes_minimax_h3 import _encode_ref_audio" in text

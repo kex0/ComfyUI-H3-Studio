@@ -1,19 +1,29 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 import { applyCropThumb, hasImageCrop, kindIconSvg, normalizeKind, openPreview } from "./thumbs.js";
-import { captureNodeSize, restoreNodeSizeSoon } from "./nodeSize.js";
+import {
+    applyVisualSize, applyVueCssSize, captureNodeSize, cssContentHeight, installSizeWatch, restoreNodeSizeSoon,
+    setKeptSize, snapshotVisualSize, wrapExpandToFit,
+} from "./nodeSize.js";
 
 const PROMPT_NODES = new Set([
     "H3StudioAutoChain",
     "H3StudioMusicVideo",
+    "H3StudioAutoChainClipFixer",
+    "H3StudioMusicVideoClipFixer",
 ]);
 const ADVANCED_AUTO_CHAIN = "H3StudioAutoChain";
 const MUSIC_VIDEO = "H3StudioMusicVideo";
-const MAX_CLIP_PROMPTS = 12;
+const AUTO_CHAIN_CLIP_FIXER = "H3StudioAutoChainClipFixer";
+const MUSIC_VIDEO_CLIP_FIXER = "H3StudioMusicVideoClipFixer";
+const MAX_CLIP_PROMPTS = 999;
+const MUSIC_MAX_CLIP_PROMPTS = 48;
+const LEGACY_CLIP_PROMPT_WIDGETS = 12;
 const MIN_PROMPT_HEIGHT = 96;
 const DEFAULT_PROMPT_HEIGHT = 96;
 const PROMPT_HOST_CHROME = 40;
 const PER_CLIP_FIELD_HEIGHT = 100;
+const CLIP_PICKS_HEIGHT = 36;
 const DEFAULT_NODE_WIDTH = 360;
 const NODE_BODY_CHROME = 54;
 const PROGRESS_WIDGET_NAME = "$$node-text-preview";
@@ -101,14 +111,26 @@ function ensureStyle() {
 .h3-studio-prompt-stack {
   display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; min-width: 0; gap: 8px;
 }
+.h3-studio-clip-picks {
+  display: flex; flex-wrap: nowrap; flex: 0 0 auto; align-items: center; gap: 4px;
+  min-width: 0; min-height: 28px; max-height: 32px; padding: 4px 0 0;
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: thin;
+}
+.h3-studio-clip-picks[hidden] { display: none !important; }
+.h3-studio-clip-picks button {
+  appearance: none; flex: 0 0 auto; min-width: 26px; height: 24px; padding: 0 7px; box-sizing: border-box;
+  border: 1px solid rgba(255,255,255,.16); border-radius: 6px;
+  background: rgba(0,0,0,.18); color: rgba(255,255,255,.68);
+  cursor: pointer; font: 600 11px/1 system-ui, sans-serif; white-space: nowrap;
+}
+.h3-studio-clip-picks button.h3-studio-clip-picks-loop { min-width: 40px; }
+.h3-studio-clip-picks button[aria-pressed="true"] {
+  background: rgba(120,185,255,.22); color: #dff; border-color: rgba(120,185,255,.42);
+}
 .h3-studio-prompt-field {
-  display: flex; flex-direction: column; flex: 1 1 0; min-height: 88px; min-width: 0; gap: 3px;
+  display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; min-width: 0; gap: 3px;
 }
-.h3-studio-prompt-field-label {
-  flex: 0 0 auto; color: rgba(255,255,255,.62); font: 600 11px/1.2 system-ui, sans-serif;
-  padding: 0 2px;
-}
-.h3-studio-prompt-field .h3-studio-prompt-wrap { flex: 1 1 auto; min-height: 72px; }
+.h3-studio-prompt-field .h3-studio-prompt-wrap { flex: 1 1 auto; min-height: 0; }
 .h3-studio-prompt-tools {
   position: absolute; right: 14px; bottom: 4px; z-index: 3; display: flex; align-items: center; gap: 3px; pointer-events: auto;
 }
@@ -263,11 +285,39 @@ function isPromptNode(node) {
 }
 
 function isAdvancedAutoChain(node) {
-    return targetNames(node).has(ADVANCED_AUTO_CHAIN);
+    return [...targetNames(node)].some((name) => name === ADVANCED_AUTO_CHAIN || name === AUTO_CHAIN_CLIP_FIXER);
 }
 
 function isMusicVideo(node) {
-    return targetNames(node).has(MUSIC_VIDEO);
+    return [...targetNames(node)].some((name) => name === MUSIC_VIDEO || name === MUSIC_VIDEO_CLIP_FIXER);
+}
+
+function isAdvancedPromptNode(node) {
+    return isAdvancedAutoChain(node) || isMusicVideo(node);
+}
+
+function isClipFixer(node) {
+    return [...targetNames(node)].some((name) => (
+        name === AUTO_CHAIN_CLIP_FIXER || name === MUSIC_VIDEO_CLIP_FIXER
+    ));
+}
+
+function documentMode(node) {
+    return isMusicVideo(node) ? "music_video" : "auto_chain";
+}
+
+function maxClipSegments(node) {
+    return isMusicVideo(node) ? MUSIC_MAX_CLIP_PROMPTS : MAX_CLIP_PROMPTS;
+}
+
+function clipRole(index, segments, node) {
+    if (index === 1) return "Start";
+    if (isClipFixer(node) || isMusicVideo(node)) return "Continue";
+    const indices = node ? storyClipIndices(node) : [];
+    const last = indices.length ? indices[indices.length - 1] : segments;
+    const fromOne = !indices.length || indices.every((n, i) => n === i + 1);
+    if (fromOne && index === last) return "Finish";
+    return "Continue";
 }
 
 function setWidgetOption(widget, key, value) {
@@ -469,11 +519,9 @@ function trailingWidgetsHeight(node, dom) {
 }
 
 function promptMinHeight(node) {
-    if (isAdvancedAutoChain(node) && promptMode(node) === "per_clip") {
-        const fields = Math.max(1, visibleClipEditors(node).length);
-        return PROMPT_HOST_CHROME + fields * PER_CLIP_FIELD_HEIGHT;
-    }
-    return DEFAULT_PROMPT_HEIGHT + (isAdvancedAutoChain(node) ? PROMPT_HOST_CHROME : 0);
+    const extra = isAdvancedPromptNode(node) ? PROMPT_HOST_CHROME : 0;
+    const picks = isAdvancedPromptNode(node) && promptMode(node) === "per_clip" ? CLIP_PICKS_HEIGHT : 0;
+    return DEFAULT_PROMPT_HEIGHT + extra + picks;
 }
 
 function remainingPromptHeight(node, dom) {
@@ -577,10 +625,11 @@ function pinPromptGrid(wrap) {
     const idx = row ? rows.indexOf(row) : -1;
     const host = wrap?.closest?.(".h3-studio-prompt-host");
     const fieldCount = host?.querySelectorAll?.(".h3-studio-prompt-field")?.length || 0;
+    const picksOn = Boolean(host?.querySelector?.(".h3-studio-clip-picks:not([hidden])"));
     const min = host
         ? (fieldCount > 1
             ? PROMPT_HOST_CHROME + fieldCount * PER_CLIP_FIELD_HEIGHT
-            : DEFAULT_PROMPT_HEIGHT + PROMPT_HOST_CHROME)
+            : DEFAULT_PROMPT_HEIGHT + PROMPT_HOST_CHROME + (picksOn ? CLIP_PICKS_HEIGHT : 0))
         : DEFAULT_PROMPT_HEIGHT;
     const template = rows.map((_, i) => (i === idx ? `minmax(${min}px, 1fr)` : "min-content")).join(" ");
     if (template && grid.style.getPropertyValue("grid-template-rows") !== template) {
@@ -623,9 +672,23 @@ function syncPromptWidget(node, widget) {
 function installPromptSizeGuard(node) {
     if (!node || node.__h3PromptSizeGuard) return;
     node.__h3PromptSizeGuard = true;
+    installPromptSizeLock(node);
+    installSizeWatch(node);
     const previousResize = node.onResize;
     node.onResize = function (...args) {
         const result = previousResize?.apply(this, args);
+        if (!this.__h3GrowingSize && !this.__h3SizeHold) {
+            const size = snapshotVisualSize(this);
+            if (this.__h3UserResizing) {
+                if (size) captureKeptSize(this, size, true);
+            } else if (this.__h3KeepSize && cssContentHeight(this) < this.__h3KeepSize[1] - 8) {
+                restoreKeptPromptNodeSize(this);
+            } else if (size && this.__h3KeepSize && size[1] < this.__h3KeepSize[1] - 8) {
+                restoreKeptPromptNodeSize(this);
+            } else if (size) {
+                captureKeptSize(this, size);
+            }
+        }
         syncPromptWidget(this, this.__h3DomWidget);
         return result;
     };
@@ -2993,7 +3056,7 @@ function migrateAdvancedPrompt(node) {
     const prompt = findWidget(node, "prompt");
     if (!prompt || String(prompt.value || "").trim()) return;
     const bodies = [];
-    for (let i = 1; i <= 12; i++) {
+    for (let i = 1; i <= LEGACY_CLIP_PROMPT_WIDGETS; i++) {
         const text = String(findWidget(node, `prompt_${i}`)?.value || "").trim();
         if (text) bodies.push({ i, text });
     }
@@ -3001,17 +3064,9 @@ function migrateAdvancedPrompt(node) {
     if (!bodies.length && !loop) return;
     const duration = Number(findWidget(node, "duration")?.value || 10);
     const segments = Number(findWidget(node, "segments")?.value || bodies.length || 1);
-    const lines = [
-        "H3 Studio prompt",
-        "mode: auto_chain",
-        `duration: ${duration.toFixed(2)}`,
-        `segments: ${segments}`,
-        `loop: ${loop ? "true" : "false"}`,
-        "",
-    ];
+    const lines = promptHeaderLines(node, duration, segments, Boolean(loop));
     for (const body of bodies) {
-        const role = body.i === 1 ? "Start" : body.i === segments ? "Finish" : "Continue";
-        lines.push(`## Clip ${body.i} — ${role}`, body.text, "");
+        lines.push(`## Clip ${body.i} — ${clipRole(body.i, segments, node)}`, body.text, "");
     }
     if (loop) lines.push("## Loop — return to Clip 1", loop, "");
     prompt.value = lines.join("\n").trim() + "\n";
@@ -3206,18 +3261,134 @@ function orderPromptNodeWidgets(node) {
 }
 
 function applyPromptNodeSize(node, next) {
-    if (!node || !Array.isArray(next) || next.length < 2) return;
-    node.setSize?.(next);
-    if (Array.isArray(node.size)) {
-        node.size[0] = next[0];
-        node.size[1] = next[1];
-    } else {
-        node.size = next;
-    }
-    node.__h3StableSize = next;
+    if (!applyVisualSize(node, next)) return;
+    node.__h3StableSize = Array.isArray(next) ? [next[0], next[1]] : next;
     captureNodeSize(node, next);
-    node._widgetSlotsDirty = true;
-    node.setDirtyCanvas?.(true, true);
+}
+
+function snapshotPromptNodeSize(node) {
+    return snapshotVisualSize(node);
+}
+
+function captureKeptSize(node, size, allowShrink) {
+    setKeptSize(node, size, allowShrink);
+}
+
+function preservePromptNodeSize(node) {
+    if (!node) return;
+    if (node.__h3SizeHold) {
+        if (!node.__h3KeepSize && node.__h3RestoreSize) {
+            node.__h3KeepSize = node.__h3RestoreSize.slice();
+        }
+        return;
+    }
+    const size = snapshotPromptNodeSize(node);
+    if (!size) return;
+    captureKeptSize(node, size);
+    node.__h3SizeHold = true;
+    node.__h3SizeHoldGen = (Number(node.__h3SizeHoldGen) || 0) + 1;
+}
+
+function restoreKeptPromptNodeSize(node) {
+    const kept = node.__h3KeepSize;
+    if (!kept) return false;
+    applyPromptNodeSize(node, kept);
+    syncPromptWidget(node, node.__h3DomWidget);
+    return true;
+}
+
+function restoreKeptPromptNodeSizeSoon(node) {
+    restoreKeptPromptNodeSize(node);
+    restoreNodeSizeSoon(node);
+    const token = (node.__h3KeepToken = (Number(node.__h3KeepToken) || 0) + 1);
+    const gen = node.__h3SizeHoldGen;
+    const apply = () => {
+        if (node.__h3KeepToken !== token) return;
+        restoreKeptPromptNodeSize(node);
+    };
+    requestAnimationFrame?.(() => {
+        apply();
+        requestAnimationFrame?.(() => {
+            apply();
+            setTimeout(apply, 0);
+            setTimeout(apply, 50);
+            setTimeout(apply, 200);
+            setTimeout(() => {
+                if (node.__h3SizeHoldGen === gen) {
+                    restoreKeptPromptNodeSize(node);
+                    node.__h3SizeHold = false;
+                }
+            }, 400);
+        });
+    });
+}
+
+function pinSizeToKept(node, size, holdOnly) {
+    const kept = node?.__h3KeepSize;
+    if (!kept || size == null) return size;
+    const width = Number(Array.isArray(size) ? size[0] : 0);
+    const height = Number(Array.isArray(size) ? size[1] : size);
+    const pin = node.__h3SizeHold || (!holdOnly && Number.isFinite(height) && height < kept[1] - 48);
+    if (!pin) return size;
+    if (Array.isArray(size)) {
+        size[0] = width > 0 ? width : kept[0];
+        size[1] = kept[1];
+        return size;
+    }
+    return [kept[0], kept[1]];
+}
+
+function installPromptSizeLock(node) {
+    if (!node || node.__h3SizeLock) return;
+    node.__h3SizeLock = true;
+    wrapExpandToFit(node);
+    const originalSetSize = node.setSize;
+    if (typeof originalSetSize === "function") {
+        node.setSize = function (next) {
+            const size = pinSizeToKept(this, next);
+            const result = originalSetSize.call(this, size);
+            const kept = this.__h3KeepSize;
+            if (kept && (this.__h3SizeHold || cssContentHeight(this) < kept[1] - 48
+                || (Array.isArray(this.size) && this.size[1] < kept[1] - 48))) {
+                applyVueCssSize(this, [this.size?.[0] || kept[0], kept[1]]);
+            }
+            return result;
+        };
+    }
+    const originalCompute = node.computeSize;
+    if (typeof originalCompute === "function") {
+        node.computeSize = function (...args) {
+            return pinSizeToKept(this, originalCompute.apply(this, args), true);
+        };
+    }
+}
+
+function growPromptNodeToFit(node) {
+    if (!node || node.__h3GrowingSize) return;
+    node.__h3GrowingSize = true;
+    try {
+        const fitted = fittingPromptNodeHeight(node);
+        const current = snapshotPromptNodeSize(node) || [];
+        const kept = node.__h3KeepSize;
+        const width = (kept && kept[0]) || current[0] || DEFAULT_NODE_WIDTH;
+        const height = Math.max(fitted, current[1] || 0, (kept && kept[1]) || 0);
+        applyPromptNodeSize(node, [width, height]);
+        node.__h3FittedHeight = fitted;
+        node._widgetSlotsDirty = true;
+        syncPromptWidget(node, node.__h3DomWidget);
+        node.onResize?.(node.size);
+        node.graph?.setDirtyCanvas?.(true, true);
+    } finally {
+        node.__h3GrowingSize = false;
+    }
+}
+
+function growPromptNodeToFitSoon(node) {
+    growPromptNodeToFit(node);
+    requestAnimationFrame?.(() => {
+        growPromptNodeToFit(node);
+        requestAnimationFrame?.(() => growPromptNodeToFit(node));
+    });
 }
 
 function applyDefaultPromptNodeSize(node) {
@@ -3240,7 +3411,8 @@ function fitPromptNodeHeight(node) {
     const extra = prevFitted == null
         ? Math.max(0, currentH - fitted)
         : Math.max(0, currentH - prevFitted);
-    applyPromptNodeSize(node, [width, fitted + extra]);
+    const keptH = Number(node.__h3KeepSize?.[1]) || 0;
+    applyPromptNodeSize(node, [width, Math.max(fitted + extra, keptH)]);
     node.__h3FittedHeight = fitted;
 }
 
@@ -3275,32 +3447,402 @@ function setPromptMode(node, mode) {
     if (widget) widget.value = next;
 }
 
-function clampClipSegments(node) {
-    const raw = Number(findWidget(node, "segments")?.value);
-    const value = Number.isFinite(raw) ? Math.round(raw) : 3;
-    return Math.min(MAX_CLIP_PROMPTS, Math.max(1, value));
+function storyClipParts(node) {
+    return splitPromptClips(findWidget(node, "prompt")?.value).parts.filter((part) => !part.isLoop);
 }
 
-function clipPromptLabel(index, segments, isLoop) {
+function storyClipIndices(node) {
+    const indices = [...new Set(
+        storyClipParts(node).map((part) => Number(part.index)).filter((n) => Number.isFinite(n) && n >= 1),
+    )].sort((a, b) => a - b);
+    return indices;
+}
+
+function clampClipSegments(node) {
+    const cap = maxClipSegments(node);
+    if (isClipFixer(node)) {
+        const fromDoc = storyClipIndices(node);
+        if (fromDoc.length) return Math.min(cap, Math.max(fromDoc[fromDoc.length - 1], fromDoc.length));
+        return 1;
+    }
+    const raw = Number(findWidget(node, "segments")?.value);
+    const value = Number.isFinite(raw) ? Math.round(raw) : 3;
+    return Math.min(cap, Math.max(1, value));
+}
+
+function clipPromptLabel(index, segments, isLoop, node) {
     if (isLoop) return "Loop — return to Clip 1";
-    if (index === 1) return `Clip ${index} — Start`;
-    if (index === segments) return `Clip ${index} — Finish`;
-    return `Clip ${index} — Continue`;
+    return `Clip ${index} — ${clipRole(index, segments, node)}`;
+}
+
+function formatDuration(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "10";
+    return n.toFixed(6).replace(/\.?0+$/, "");
+}
+
+function splitPromptClips(text) {
+    const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+    const header = [];
+    const parts = [];
+    let current = null;
+    for (const line of lines) {
+        const heading = line.trim().match(/^##\s+(?:Clip\s+(\d+)|Loop\b)/i);
+        if (heading) {
+            if (current) parts.push(current);
+            current = {
+                index: heading[1] ? Number(heading[1]) : null,
+                isLoop: !heading[1],
+                heading: line.trim(),
+                lines: [],
+            };
+            continue;
+        }
+        if (current) current.lines.push(line);
+        else header.push(line);
+    }
+    if (current) parts.push(current);
+    return { header: header.join("\n"), parts };
+}
+
+function defaultClipHeading(index, segments, isLoop, node) {
+    if (isLoop) return "## Loop — return to Clip 1";
+    return `## Clip ${index} — ${clipRole(index, segments, node)}`;
+}
+
+function joinPromptClips(header, parts, node) {
+    const story = parts.filter((part) => !part.isLoop);
+    const segments = Math.max(1, ...story.map((part) => Number(part.index) || 0));
+    const chunks = [String(header || "").replace(/\s+$/, "")];
+    for (const part of parts) {
+        const title = part.heading || defaultClipHeading(part.index, segments, part.isLoop, node);
+        const body = part.lines.join("\n").replace(/^\n+|\n+$/g, "");
+        chunks.push("", title, body);
+    }
+    return `${chunks.join("\n").replace(/\s+$/, "")}\n`;
+}
+
+function clipSlotOf(name) {
+    if (name === "loop_prompt") return { isLoop: true, index: null };
+    const match = String(name || "").match(/^prompt_(\d+)$/);
+    if (match) return { isLoop: false, index: Number(match[1]) };
+    return null;
+}
+
+function getClipSlotText(node, name) {
+    const slot = clipSlotOf(name);
+    const prompt = String(findWidget(node, "prompt")?.value || "");
+    const parsed = splitPromptClips(prompt);
+    if (slot && parsed.parts.length) {
+        const part = slot.isLoop
+            ? parsed.parts.find((item) => item.isLoop)
+            : parsed.parts.find((item) => item.index === slot.index);
+        const segments = clampClipSegments(node);
+        const heading = part?.heading || defaultClipHeading(slot.index, segments, slot.isLoop, node);
+        const body = part ? part.lines.join("\n").replace(/^\n+|\n+$/g, "") : "";
+        return body ? `${heading}\n${body}` : heading;
+    }
+    const fallback = String(findWidget(node, name)?.value || "");
+    if (!slot || !fallback.trim()) return fallback;
+    const segments = clampClipSegments(node);
+    const heading = defaultClipHeading(slot.index, segments, slot.isLoop, node);
+    return `${heading}\n${fallback}`.replace(/\n+$/, "");
+}
+
+function setClipSlotText(node, name, text) {
+    const slot = clipSlotOf(name);
+    const raw = String(text || "").replace(/\r\n/g, "\n");
+    const lines = raw.split("\n");
+    let heading = null;
+    let bodyLines = lines;
+    if (/^##\s+(?:Clip\s+\d+|Loop\b)/i.test(lines[0]?.trim() || "")) {
+        heading = lines[0].trim();
+        bodyLines = lines.slice(1);
+        if (bodyLines[0] === "") bodyLines = bodyLines.slice(1);
+    }
+    const body = bodyLines.join("\n").replace(/^\n+|\n+$/g, "");
+    const widget = findWidget(node, name);
+    if (widget) widget.value = body;
+    const prompt = findWidget(node, "prompt");
+    if (!prompt || !slot) return;
+    const parsed = splitPromptClips(prompt.value);
+    let found = false;
+    const nextParts = parsed.parts.map((part) => {
+        if (slot.isLoop ? part.isLoop : part.index === slot.index) {
+            found = true;
+            return {
+                ...part,
+                heading: heading || part.heading || defaultClipHeading(slot.index, clampClipSegments(node), slot.isLoop, node),
+                lines: body.split("\n"),
+            };
+        }
+        return part;
+    });
+    if (!found) {
+        nextParts.push({
+            index: slot.index,
+            isLoop: slot.isLoop,
+            heading: heading || defaultClipHeading(slot.index, clampClipSegments(node), slot.isLoop, node),
+            lines: body.split("\n"),
+        });
+        nextParts.sort((a, b) => {
+            if (a.isLoop !== b.isLoop) return a.isLoop ? 1 : -1;
+            return (a.index || 0) - (b.index || 0);
+        });
+    }
+    prompt.value = joinPromptClips(parsed.header, nextParts, node);
+}
+
+function headerHasTiming(text) {
+    const header = splitPromptClips(text).header;
+    return /^(?:H3 Studio prompt\s*|mode\s*:|duration\s*:|max_duration_seconds\s*:|segments\s*:|clip_count\s*:|loop\s*:)/im.test(
+        String(header || "").trim(),
+    );
+}
+
+function promptHeaderLines(node, duration, segments, loopOn) {
+    const lines = [
+        "H3 Studio prompt",
+        `mode: ${documentMode(node)}`,
+        `duration: ${formatDuration(duration)}`,
+        `segments: ${segments}`,
+    ];
+    if (!isMusicVideo(node)) lines.push(`loop: ${loopOn ? "true" : "false"}`);
+    lines.push("");
+    return lines;
+}
+
+function patchPromptHeaderTiming(text, duration, segments, loop, node) {
+    const raw = String(text || "").replace(/\r\n/g, "\n");
+    if (!headerHasTiming(raw)) return raw;
+    const lines = raw.split("\n");
+    const seen = { duration: false, segments: false, loop: false };
+    const wantLoop = node ? !isMusicVideo(node) : true;
+    let inHeader = true;
+    const next = lines.map((line) => {
+        if (inHeader && /^##\s+(?:Clip\s+\d+|Loop\b)/i.test(line.trim())) inHeader = false;
+        if (!inHeader) return line;
+        const match = line.match(/^(duration|max_duration_seconds|segments|clip_count|loop)\s*:/i);
+        if (!match) return line;
+        const key = match[1].toLowerCase();
+        if (key === "duration" || key === "max_duration_seconds") {
+            seen.duration = true;
+            return `duration: ${formatDuration(duration)}`;
+        }
+        if (key === "segments" || key === "clip_count") {
+            seen.segments = true;
+            return `segments: ${segments}`;
+        }
+        seen.loop = true;
+        return `loop: ${loop ? "true" : "false"}`;
+    });
+    const hasDocHeader = next.some((line) => /^(H3 Studio prompt\s*|mode\s*:)/i.test(line.trim()));
+    if (hasDocHeader && (!seen.duration || !seen.segments || (wantLoop && !seen.loop))) {
+        const insert = [];
+        if (!seen.duration) insert.push(`duration: ${formatDuration(duration)}`);
+        if (!seen.segments) insert.push(`segments: ${segments}`);
+        if (wantLoop && !seen.loop) insert.push(`loop: ${loop ? "true" : "false"}`);
+        const modeAt = next.findIndex((line) => /^mode\s*:/i.test(line.trim()));
+        const clipAt = next.findIndex((line) => /^##\s+(?:Clip\s+\d+|Loop\b)/i.test(line.trim()));
+        const at = modeAt >= 0 ? modeAt + 1 : (clipAt >= 0 ? clipAt : 0);
+        next.splice(at, 0, ...insert);
+    }
+    return next.join("\n");
+}
+
+function applyHeaderTimingToWidgets(node) {
+    if (isClipFixer(node)) return;
+    const text = String(findWidget(node, "prompt")?.value || "");
+    const timing = parseHeaderTiming(text);
+    const story = storyClipParts(node);
+    if (timing.duration != null && findWidget(node, "duration")) {
+        findWidget(node, "duration").value = timing.duration;
+    }
+    const segmentsWidget = findWidget(node, "segments");
+    if (segmentsWidget) {
+        const n = timing.segments != null ? timing.segments : (story.length || Number(segmentsWidget.value) || 3);
+        segmentsWidget.value = Math.min(maxClipSegments(node), Math.max(1, Math.round(Number(n) || 3)));
+    }
+    const loopWidget = findWidget(node, "seamless_loop");
+    if (loopWidget) {
+        loopWidget.value = timing.loop != null ? Boolean(timing.loop) : story.length !== splitPromptClips(text).parts.length;
+    }
+}
+
+function applyWidgetsTimingToHeader(node) {
+    if (isClipFixer(node)) return;
+    const prompt = findWidget(node, "prompt");
+    if (!prompt || !headerHasTiming(prompt.value)) return;
+    prompt.value = patchPromptHeaderTiming(
+        prompt.value,
+        findWidget(node, "duration")?.value,
+        clampClipSegments(node),
+        isSeamlessLoopOn(node),
+        node,
+    );
+}
+
+function ensurePromptClipSections(node) {
+    if (isClipFixer(node)) return;
+    const prompt = findWidget(node, "prompt");
+    if (!prompt) return;
+    const parsed = splitPromptClips(prompt.value);
+    const byIndex = new Map(parsed.parts.filter((part) => !part.isLoop).map((part) => [part.index, part]));
+    const existing = [...byIndex.keys()].filter((n) => Number.isFinite(n) && n >= 1).sort((a, b) => a - b);
+    const consecutiveFromOne = existing.length > 0 && existing.every((n, i) => n === i + 1);
+    const segments = clampClipSegments(node);
+    const loopOn = isSeamlessLoopOn(node);
+    const next = [];
+    if (existing.length && !consecutiveFromOne) {
+        for (const i of existing) next.push(byIndex.get(i));
+        let n = existing[existing.length - 1];
+        while (next.length < segments) {
+            n += 1;
+            next.push({
+                index: n,
+                isLoop: false,
+                heading: defaultClipHeading(n, Math.max(n, segments), false, node),
+                lines: [],
+            });
+        }
+        if (next.length > segments) next.length = segments;
+    } else {
+        for (let i = 1; i <= segments; i++) {
+            next.push(byIndex.get(i) || {
+                index: i,
+                isLoop: false,
+                heading: defaultClipHeading(i, segments, false, node),
+                lines: [],
+            });
+        }
+    }
+    const loopPart = parsed.parts.find((part) => part.isLoop);
+    if (loopOn) {
+        next.push(loopPart || {
+            index: null,
+            isLoop: true,
+            heading: defaultClipHeading(0, segments, true, node),
+            lines: [],
+        });
+    }
+    let header = parsed.header;
+    if (headerHasTiming(String(header || ""))) {
+        header = patchPromptHeaderTiming(header, findWidget(node, "duration")?.value, segments, loopOn, node);
+    }
+    prompt.value = joinPromptClips(header, next, node);
+}
+
+function perClipSlots(node) {
+    const parsed = splitPromptClips(findWidget(node, "prompt")?.value);
+    const fromDoc = storyClipIndices(node);
+    const indices = fromDoc.length
+        ? fromDoc
+        : (isClipFixer(node) ? [] : Array.from({ length: clampClipSegments(node) }, (_, i) => i + 1));
+    const span = Math.max(clampClipSegments(node), ...indices, 1);
+    const slots = indices.map((i) => ({
+        name: `prompt_${i}`,
+        short: String(i),
+        label: clipPromptLabel(i, span, false, node),
+    }));
+    const loopOn = isClipFixer(node)
+        ? parsed.parts.some((part) => part.isLoop)
+        : isSeamlessLoopOn(node);
+    if (loopOn) {
+        slots.push({
+            name: "loop_prompt",
+            short: "Loop",
+            label: clipPromptLabel(0, span, true, node),
+        });
+    }
+    return slots;
+}
+
+function activePerClipSlot(node) {
+    const slots = perClipSlots(node);
+    if (!slots.length) {
+        return { name: "prompt_1", short: "1", label: clipPromptLabel(1, 1, false, node) };
+    }
+    const names = slots.map((slot) => slot.name);
+    if (!names.includes(node.__h3PerClipSlot)) {
+        node.__h3PerClipSlot = names[0];
+    }
+    return slots.find((slot) => slot.name === node.__h3PerClipSlot) || slots[0];
 }
 
 function visibleClipEditors(node) {
     if (promptMode(node) !== "per_clip") {
         return [{ name: "prompt", label: "prompt" }];
     }
-    const segments = clampClipSegments(node);
-    const fields = [];
-    for (let i = 1; i <= segments; i++) {
-        fields.push({ name: `prompt_${i}`, label: clipPromptLabel(i, segments, false) });
+    const slots = perClipSlots(node);
+    if (!slots.length) return [{ name: "prompt", label: "prompt" }];
+    return [activePerClipSlot(node)];
+}
+
+function persistActivePromptEditor(node) {
+    const editor = node.__h3PromptHost?.querySelector(".h3-studio-prompt-editor");
+    if (editor) persistEditor(node, editor);
+}
+
+function bindEditorToWidget(node, widgetName, label) {
+    const host = node.__h3PromptHost;
+    const editor = host?.querySelector(".h3-studio-prompt-editor");
+    if (!editor) return;
+    persistEditor(node, editor);
+    editor.__h3GetValue = () => getClipSlotText(node, widgetName);
+    editor.__h3SetValue = (text) => setClipSlotText(node, widgetName, text);
+    editor.setAttribute("aria-label", label);
+    const wrap = editor.closest(".h3-studio-prompt-wrap");
+    const viewButton = wrap?.querySelector(".h3-studio-prompt-tools:not(.is-top) .h3-studio-prompt-tool");
+    activatePromptEditor(node, editor, wrap, viewButton);
+    renderEditor(node);
+    resetHistory(node);
+}
+
+function selectPerClipSlot(node, name) {
+    if (promptMode(node) !== "per_clip") return;
+    const next = perClipSlots(node).find((slot) => slot.name === name);
+    if (!next || node.__h3PerClipSlot === name) return;
+    bindEditorToWidget(node, next.name, next.label);
+    node.__h3PerClipSlot = name;
+    syncClipPicks(node);
+}
+
+function syncClipPicks(node) {
+    const picks = node.__h3PromptHost?.querySelector(".h3-studio-clip-picks");
+    if (!picks) return;
+    const perClip = promptMode(node) === "per_clip";
+    picks.hidden = !perClip;
+    if (!perClip) return;
+    const slots = perClipSlots(node);
+    const active = activePerClipSlot(node);
+    const key = slots.map((slot) => slot.name).join("|");
+    if (picks.dataset.key !== key) {
+        picks.dataset.key = key;
+        picks.replaceChildren();
+        for (const slot of slots) {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.dataset.slot = slot.name;
+            btn.textContent = slot.short;
+            btn.title = slot.label;
+            btn.setAttribute("aria-label", slot.label);
+            if (slot.name === "loop_prompt") btn.className = "h3-studio-clip-picks-loop";
+            btn.addEventListener("pointerdown", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+            });
+            btn.addEventListener("click", (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                selectPerClipSlot(node, slot.name);
+            });
+            picks.appendChild(btn);
+        }
     }
-    if (isSeamlessLoopOn(node)) {
-        fields.push({ name: "loop_prompt", label: clipPromptLabel(0, segments, true) });
-    }
-    return fields;
+    picks.querySelectorAll("button").forEach((btn) => {
+        btn.setAttribute("aria-pressed", btn.dataset.slot === active.name ? "true" : "false");
+    });
+    picks.querySelector("button[aria-pressed='true']")?.scrollIntoView?.({ inline: "nearest", block: "nearest" });
 }
 
 function parseHeaderTiming(text) {
@@ -3308,14 +3850,14 @@ function parseHeaderTiming(text) {
     let segments = null;
     let loop = null;
     for (const line of String(text || "").split(/\r?\n/)) {
-        const match = line.trim().match(/^(duration|segments|loop)\s*:\s*(.+)$/i);
+        const match = line.trim().match(/^(duration|max_duration_seconds|segments|clip_count|loop)\s*:\s*(.+)$/i);
         if (!match) continue;
         const key = match[1].toLowerCase();
         const raw = match[2].trim();
-        if (key === "duration") {
+        if (key === "duration" || key === "max_duration_seconds") {
             const value = Number(raw.replace(/s$/i, ""));
             if (Number.isFinite(value)) duration = value;
-        } else if (key === "segments") {
+        } else if (key === "segments" || key === "clip_count") {
             const value = Number(raw);
             if (Number.isFinite(value)) segments = Math.round(value);
         } else if (key === "loop") {
@@ -3396,17 +3938,9 @@ function composeUnifiedFromClipWidgets(node) {
     }
     const loopText = String(findWidget(node, "loop_prompt")?.value || "").trim();
     if (!bodies.length && !loopText) return;
-    const lines = [
-        "H3 Studio prompt",
-        "mode: auto_chain",
-        `duration: ${duration.toFixed(2)}`,
-        `segments: ${segments}`,
-        `loop: ${loop ? "true" : "false"}`,
-        "",
-    ];
+    const lines = promptHeaderLines(node, duration, segments, loop);
     for (const body of bodies) {
-        const role = body.i === 1 ? "Start" : body.i === segments ? "Finish" : "Continue";
-        lines.push(`## Clip ${body.i} — ${role}`, body.text, "");
+        lines.push(`## Clip ${body.i} — ${clipRole(body.i, segments, node)}`, body.text, "");
     }
     if (loop && loopText) lines.push("## Loop — return to Clip 1", loopText, "");
     prompt.value = `${lines.join("\n").trim()}\n`;
@@ -3414,22 +3948,31 @@ function composeUnifiedFromClipWidgets(node) {
 
 function hideNativeClipPromptWidgets(node) {
     hideOriginalPromptWidget(findWidget(node, "prompt_mode"));
-    for (let i = 1; i <= MAX_CLIP_PROMPTS; i++) {
-        setPromptWidgetVisible(findWidget(node, `prompt_${i}`), false);
+    for (const widget of node.widgets || []) {
+        const name = String(widget?.name || "");
+        if (name === "loop_prompt" || /^prompt_\d+$/.test(name)) {
+            setPromptWidgetVisible(widget, false);
+        }
     }
-    setPromptWidgetVisible(findWidget(node, "loop_prompt"), false);
+}
+
+function timingWidgetNames(node) {
+    const names = ["duration", "segments"];
+    if (findWidget(node, "seamless_loop")) names.push("seamless_loop");
+    return names;
 }
 
 function syncAdvancedTimingWidgets(node, perClip) {
-    for (const name of ["duration", "segments", "seamless_loop"]) {
-        setPromptWidgetVisible(findWidget(node, name), perClip);
-        setPromptInputHidden(node, name, !perClip);
+    const show = perClip && !isClipFixer(node);
+    for (const name of timingWidgetNames(node)) {
+        setPromptWidgetVisible(findWidget(node, name), show);
+        setPromptInputHidden(node, name, !show);
     }
     const host = node.__h3DomWidget;
-    if (perClip && host) {
-        placeWidgetBefore(node, "duration", host);
-        placeWidgetBefore(node, "segments", host);
-        placeWidgetBefore(node, "seamless_loop", host);
+    if (show && host) {
+        for (const name of timingWidgetNames(node)) {
+            placeWidgetBefore(node, name, host);
+        }
     }
 }
 
@@ -3439,7 +3982,10 @@ function wrapAdvancedTimingCallback(node, name) {
     widget.__h3AdvancedHostGuard = true;
     const original = widget.callback;
     widget.callback = function (...args) {
+        preservePromptNodeSize(node);
+        persistActivePromptEditor(node);
         const result = original?.apply(this, args);
+        restoreKeptPromptNodeSize(node);
         queueMicrotask(() => syncAdvancedPromptHost(node));
         return result;
     };
@@ -3448,18 +3994,20 @@ function wrapAdvancedTimingCallback(node, name) {
 function mountClipEditorField(node, stack, field) {
     const box = document.createElement("div");
     box.className = "h3-studio-prompt-field";
-    if (field.name !== "prompt") {
-        const label = document.createElement("div");
-        label.className = "h3-studio-prompt-field-label";
-        label.textContent = field.label;
-        box.appendChild(label);
-    }
-    box.appendChild(createPromptEditorUi(node, { label: field.label, widgetName: field.name }));
+    const options = field.name === "prompt"
+        ? { label: field.label, widgetName: "prompt" }
+        : {
+            label: field.label,
+            widgetName: field.name,
+            getValue: () => getClipSlotText(node, field.name),
+            setValue: (text) => setClipSlotText(node, field.name, text),
+        };
+    box.appendChild(createPromptEditorUi(node, options));
     stack.appendChild(box);
 }
 
 function syncAdvancedPromptHost(node) {
-    if (!isAdvancedAutoChain(node)) return;
+    if (!isAdvancedPromptNode(node)) return;
     const host = node.__h3PromptHost;
     if (!host) return;
     wrapAdvancedTimingCallback(node, "segments");
@@ -3472,30 +4020,39 @@ function syncAdvancedPromptHost(node) {
     host.querySelectorAll("[data-mode]").forEach((btn) => {
         btn.setAttribute("aria-pressed", btn.dataset.mode === mode ? "true" : "false");
     });
+    persistActivePromptEditor(node);
+    if (perClip) ensurePromptClipSections(node);
     const fields = visibleClipEditors(node);
-    const key = fields.map((field) => field.name).join("|");
+    const key = `${mode}|${fields.map((field) => field.name).join("|")}`;
     const stack = host.querySelector(".h3-studio-prompt-stack");
     if (!stack) return;
-    if (node.__h3PromptHostKey === key && stack.childElementCount === fields.length) {
-        [...stack.children].forEach((box, i) => {
-            const label = box.querySelector(".h3-studio-prompt-field-label");
-            if (label) label.textContent = fields[i].label;
-        });
-        return;
+    syncClipPicks(node);
+    if (!(node.__h3PromptHostKey === key && stack.childElementCount === 1)) {
+        node.__h3PromptHostKey = key;
+        stack.replaceChildren();
+        if (fields[0]) mountClipEditorField(node, stack, fields[0]);
     }
-    node.__h3PromptHostKey = key;
-    stack.replaceChildren();
-    for (const field of fields) mountClipEditorField(node, stack, field);
     node._widgetSlotsDirty = true;
     node.setDirtyCanvas?.(true, true);
-    fitPromptNodeHeightSoon(node);
+    restoreKeptPromptNodeSizeSoon(node);
 }
 
 function switchAdvancedPromptMode(node, mode) {
     const next = mode === "per_clip" ? "per_clip" : "single";
     if (next === promptMode(node)) return;
-    if (next === "per_clip") splitUnifiedIntoClipWidgets(node);
-    else composeUnifiedFromClipWidgets(node);
+    persistActivePromptEditor(node);
+    preservePromptNodeSize(node);
+    if (next === "per_clip") {
+        applyHeaderTimingToWidgets(node);
+        const prompt = findWidget(node, "prompt");
+        if (prompt && !splitPromptClips(prompt.value).parts.length) {
+            splitUnifiedIntoClipWidgets(node);
+            composeUnifiedFromClipWidgets(node);
+        }
+        ensurePromptClipSections(node);
+    } else if (!isClipFixer(node)) {
+        applyWidgetsTimingToHeader(node);
+    }
     setPromptMode(node, next);
     node.__h3PromptHostKey = "";
     syncAdvancedPromptHost(node);
@@ -3532,7 +4089,12 @@ function ensureAdvancedPromptHost(node) {
     }
     const stack = document.createElement("div");
     stack.className = "h3-studio-prompt-stack";
-    host.append(modeBar, stack);
+    const picks = document.createElement("div");
+    picks.className = "h3-studio-clip-picks";
+    picks.setAttribute("role", "group");
+    picks.setAttribute("aria-label", "Clip prompts");
+    picks.hidden = true;
+    host.append(modeBar, stack, picks);
     node.__h3PromptHost = host;
     node.__h3EditorWrap = host;
     const prompt = findWidget(node, "prompt");
@@ -3581,7 +4143,7 @@ function installPromptEditor(node) {
     const widget = findWidget(node, "prompt");
     if (!widget) return;
     node.__h3GetInventory = () => collectedInventory(node, linkedBuilder(node));
-    if (isAdvancedAutoChain(node)) {
+    if (isAdvancedPromptNode(node)) {
         hideOriginalPromptWidget(widget);
         if (promptMode(node) !== "per_clip") migrateAdvancedPrompt(node);
         if (node.__h3PromptHost && node.__h3DomWidget && findWidget(node, "h3_prompt_mentions")) {
@@ -3654,6 +4216,13 @@ app.registerExtension({
 
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (!PROMPT_NODES.has(nodeData?.name)) return;
+        const originalExpand = nodeType.prototype.expandToFitContent;
+        if (typeof originalExpand === "function") {
+            nodeType.prototype.expandToFitContent = function (...args) {
+                if (this.__h3KeepSize || this.__h3SizeHold) return;
+                return originalExpand.apply(this, args);
+            };
+        }
         const originalSerialize = nodeType.prototype.serialize;
         nodeType.prototype.serialize = function () {
             const info = originalSerialize?.apply(this, arguments);
@@ -3686,12 +4255,16 @@ app.registerExtension({
             pinProgressWidgets(this);
             return result;
         };
-        if (nodeData?.name === ADVANCED_AUTO_CHAIN) {
+        if (PROMPT_NODES.has(nodeData?.name)) {
             const originalOnWidgetChanged = nodeType.prototype.onWidgetChanged;
             nodeType.prototype.onWidgetChanged = function (name, value, oldValue, widget) {
-                const result = originalOnWidgetChanged?.apply(this, arguments);
                 const widgetName = widget?.name ?? name;
                 if (widgetName === "segments" || widgetName === "seamless_loop" || widgetName === "prompt_mode") {
+                    preservePromptNodeSize(this);
+                }
+                const result = originalOnWidgetChanged?.apply(this, arguments);
+                if (widgetName === "segments" || widgetName === "seamless_loop" || widgetName === "prompt_mode") {
+                    restoreKeptPromptNodeSize(this);
                     queueMicrotask(() => syncAdvancedPromptHost(this));
                 }
                 return result;

@@ -74,6 +74,26 @@ def test_require_pack_keeps_duration_and_segments():
     assert with_song["song"]["sample_rate"] == 48000
     assert with_song["lyrics"] == "[00:00.000-00:02.000] hello"
     assert "pictures" in got
+    assert "prompt_mode" not in got
+    assert "seed_prompt" not in got
+    assert "fix_clips" not in got
+
+
+def test_require_pack_keeps_clip_fix_fields():
+    pack = _load("pack")
+    got = pack.require_pack({
+        "models": [_item(1, model="m")],
+        "plan": "builder plan",
+        "prompt_mode": "clip_fix",
+        "seed_prompt": "## Clip 11 — Continue\nsummary:\nfix\n",
+        "fix_clips": [11, 12, 11],
+        "noise": "drop me",
+    })
+    assert got["prompt_mode"] == "clip_fix"
+    assert got["seed_prompt"].startswith("## Clip 11")
+    assert got["fix_clips"] == [11, 12]
+    assert got["plan"] == "builder plan"
+    assert "noise" not in got
 
 
 def test_assert_ref_caps_limits():
@@ -395,7 +415,7 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert 'required.pop("duration"' in auto_chain
     assert 'required.pop("segments"' in auto_chain
     assert 'required.pop("loop_prompt"' in auto_chain
-    assert 'required.pop(f"prompt_{i}"' in auto_chain
+    assert 'str(name).startswith("prompt_")' in auto_chain
     assert "prompt_mode" in auto_chain
     assert 'optional["prompt_mode"]' in auto_chain
     assert "document_has_loop" in auto_chain
@@ -404,6 +424,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert '"song": ("AUDIO"' not in music_video
     assert 'required.pop("duration"' in music_video
     assert "duration_and_segments_from_pack_or_prompt" in music_video
+    assert "prompt_mode" in music_video
+    assert 'optional["prompt_mode"]' in music_video
     assert "H3StudioAutoChainAdvanced" not in init
     assert "H3 Studio - Auto Chain Advanced" not in init
     assert "H3StudioMusicVideoAdvanced" not in init
@@ -451,6 +473,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "openCropEditor" in builder_js
     assert "openRegionEditor" in builder_js
     assert 'data-act="segments"' in builder_js
+    assert "SEGMENTS_SLIDER_MAX = 10" in builder_js
+    assert "function setSegmentsFields" in builder_js
     assert 'data-act="duration-num"' in builder_js
     assert 'data-act="segments-num"' in builder_js
     assert 'type="number"' in builder_js
@@ -517,8 +541,8 @@ def test_advanced_nodes_use_pack_not_model_or_picture_sockets():
     assert "H3StudioAutoChain" in js_seg
     assert "H3StudioAutoChainAdvanced" not in js_seg
     assert "hideLegacyPromptWidgets" in js_seg
-    assert "./nodeSize.js" in js_seg
-    assert "restoreNodeSizeSoon" in js_seg
+    assert "stripLegacyModelSockets" in js_seg
+    assert "./nodeSize.js" not in js_seg
     assert "node.setSize([" not in js_seg
     js_ref = (ROOT / "web" / "js" / "musicVideoRefImages.js").read_text(encoding="utf-8")
     assert "H3StudioAutoChainAdvanced" not in js_ref
@@ -535,7 +559,7 @@ def test_builder_mode_and_media_helpers():
         "MAX_DURATION = 15.0\n"
         "MIN_CLIP_SEC = 2.0\n"
         "MAX_CLIP_SEC = 15.0\n"
-        "MAX_SEGMENTS = 12\n"
+        "MAX_SEGMENTS = 999\n"
         "def normalize_mode"
         + builder_src.split("def normalize_mode", 1)[1].split("def file_properties", 1)[0],
         ns,
@@ -552,7 +576,8 @@ def test_builder_mode_and_media_helpers():
     assert clamp_duration(99) == 15.0
     assert clamp_duration(1) == 5.0
     assert clamp_segments(0) == 1
-    assert clamp_segments(99) == 12
+    assert clamp_segments(99) == 99
+    assert clamp_segments(1000) == 999
     assert media_enabled_for_load({"kind": "audio", "enabled": True}, True) is False
     assert media_enabled_for_load({"kind": "audio", "enabled": True}, False) is True
     assert media_enabled_for_load({"kind": "image", "enabled": True}, True) is True
