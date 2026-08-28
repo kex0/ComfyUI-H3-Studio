@@ -4051,12 +4051,16 @@ function ensureAdvancedPromptHost(node) {
     modeBar.className = "h3-studio-prompt-mode";
     modeBar.setAttribute("role", "group");
     modeBar.setAttribute("aria-label", "Prompt layout");
+    const layoutTip =
+        "Only changes how the prompt is shown. It does not affect generation.";
+    modeBar.title = layoutTip;
     for (const [id, label] of [["single", "Single prompt"], ["per_clip", "One prompt per clip"]]) {
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "h3-studio-prompt-mode-btn";
         btn.dataset.mode = id;
         btn.textContent = label;
+        btn.title = layoutTip;
         btn.addEventListener("pointerdown", (event) => {
             event.preventDefault();
             event.stopPropagation();

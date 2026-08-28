@@ -121,6 +121,8 @@ def test_auto_chain_frontend_targets_release_node_class():
     assert "h3-studio-prompt-mode" in editor
     assert "One prompt per clip" in editor
     assert "Single prompt" in editor
+    assert "Only changes how the prompt is shown. It does not affect generation." in editor
+    assert "btn.title = layoutTip" in editor
     assert "syncAdvancedPromptHost" in editor
     assert "MAX_CLIP_PROMPTS = 999" in editor
     assert "function formatDuration" in editor
