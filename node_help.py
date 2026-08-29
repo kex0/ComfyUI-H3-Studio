@@ -40,7 +40,7 @@ NODE_HELP = {
 
         Wire `pack` into Local Prompter, Music Video, or Auto Chain.
 
-        Or click **Copy skill command** and paste into an agent that has the matching skill:
+        Prefer **Copy skill command** into an agent when you can — quality is higher than Local Prompter.
         `/prompt-minimax-h3-music-video` or `/prompt-minimax-h3-auto_chain`.
         Skills live in this pack: [skills folder](""" + SKILLS_URL + """).
     """).strip(),
@@ -48,6 +48,7 @@ NODE_HELP = {
         ## Local Prompter
 
         Writes prompts on your machine for **Music Video**, **Auto Chain**, and **Clip Prompt Fixer**.
+        Prefer an [agent skill](""" + SKILLS_URL + """) when you can — the results are better.
 
         1. Wire Builder into this node.
         2. For a clip rewrite, put Clip Prompt Fixer between Builder and this node.
@@ -65,7 +66,7 @@ NODE_HELP = {
 
         1. Builder in **Music Video** mode, with song + timed lyrics.
         2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
-        3. Paste the prompt from Local Prompter (or the music-video skill).
+        3. Paste the prompt from the music-video skill (or Local Prompter).
         4. Queue.
 
         `IMAGE` is the PNG sequence. Keep `latent_prefix` if you might Clip-Fix later.
@@ -78,7 +79,7 @@ NODE_HELP = {
 
         1. Builder in **Auto Chain** mode.
         2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
-        3. Paste the prompt from Local Prompter (or the auto_chain skill).
+        3. Paste the prompt from the auto_chain skill (or Local Prompter).
         4. Queue.
 
         Turn on **seamless loop** if you want a Loop clip that returns to the start.
@@ -94,10 +95,12 @@ NODE_HELP = {
         3. Set `clip_index` (`11-12` or `11,12`).
         4. Write a Plan of what should change.
 
+        Prefer **Copy skill command** when you can — quality is higher than Local Prompter.
+
         Then either:
 
-        - Wire this node into **Local Prompter** and queue, or
-        - Click **Copy skill command** and paste into an agent.
+        - Click **Copy skill command** and paste into an agent, or
+        - Wire this node into **Local Prompter** and queue.
 
         The skill `/prompt-minimax-h3-clip-fix` rewrites only those clip bodies. Paste the result back into Music Video or Auto Chain.
 

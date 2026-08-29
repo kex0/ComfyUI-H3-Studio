@@ -2,7 +2,7 @@
 
 With this extension you can create videos of any length with MiniMax H3 in ComfyUI, including seamlessly looping videos and full music videos.
 
-Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → **Local Prompter** or an [agent skill](skills/README.md) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**.
+Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → an [agent skill](skills/README.md) (or **Local Prompter**) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**. Example graphs: **Workflow → Browse Templates → ComfyUI-H3-Studio**. Prefer the skills when you can — the prompts are higher quality.
 
 <details>
 
@@ -60,7 +60,7 @@ https://github.com/user-attachments/assets/5b6bdb6f-00fc-4bc7-9d03-ddbe2f624ef4
 
 ![Local Prompter](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/local-prompter.webp)
 
-Writes Auto Chain or Music Video prompts on your machine from the Builder pack. Keep the Plan short; the local model expands it into timed, filmable clip bodies.
+Writes Auto Chain or Music Video prompts on your machine from the Builder pack. Keep the Plan short; the local model expands it into timed, filmable clip bodies. Prefer an [agent skill](skills/README.md) when you can — the results are better.
 
 1. Wire Builder into this node (put **Clip Prompt Fixer** in between to rewrite a few clips).
 2. Pick a GGUF and queue **without H3 loaded**. The node unloads Comfy models, starts `llama-server` on `127.0.0.1`, generates each clip, then kills the server.
@@ -96,7 +96,7 @@ Generates a multi-clip video from Builder refs (not lipsync-to-song). Each clip 
 
 1. Builder in **Auto Chain** mode.
 2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
-3. Paste the prompt from Local Prompter (or `/prompt-minimax-h3-auto_chain`).
+3. Paste the prompt from `/prompt-minimax-h3-auto_chain` (or Local Prompter).
 4. Queue.
 
 Turn on **seamless loop** for a Loop clip that returns to the start. Keep `latent_prefix` if you might Clip-Fix later. `IMAGE` is the temp PNG sequence.
@@ -109,7 +109,7 @@ Generates a lipsync video that follows the song. Clip count and max duration com
 
 1. Builder in **Music Video** mode, with song + timed lyrics.
 2. Wire that pack here. Connect CLIP, video VAE, audio VAE, sampler, sigmas, and noise.
-3. Paste the prompt from Local Prompter (or `/prompt-minimax-h3-music-video`).
+3. Paste the prompt from `/prompt-minimax-h3-music-video` (or Local Prompter).
 4. Queue.
 
 ![Music Video, one prompt per clip](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-video-one-prompt-per-clip.webp)
@@ -127,7 +127,7 @@ Rewrites a few clips in an existing Music Video or Auto Chain prompt. Lyrics, `t
 3. Set `clip_index` (`11-12` or `11,12`).
 4. Write a Plan of what should change.
 
-Then either wire this node into **Local Prompter** and queue, or click **Copy skill command** and paste `/prompt-minimax-h3-clip-fix` into an agent. The command includes the plan, the selected clips, and one previous and one following clip. Local Prompter output is the selected `## Clip` sections only (no `H3 Studio prompt` header, not neighbor clips). Neighbor clips in the seed are still used as continue-from / land-into context while writing.
+Prefer **Copy skill command** and `/prompt-minimax-h3-clip-fix` when you can ([skills](skills/README.md)) — quality is higher than Local Prompter. The command includes the plan, the selected clips, and one previous and one following clip. Or wire this node into **Local Prompter** and queue. Local Prompter output is the selected `## Clip` sections only (no `H3 Studio prompt` header, not neighbor clips). Neighbor clips in the seed are still used as continue-from / land-into context while writing.
 
 ![Clip Prompt Fixer into Local Prompter](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/clip-prompt-fixer-local-prompter-output.webp)
 
@@ -193,7 +193,7 @@ Every H3 Studio node has a **?** in the header. That guide is the short version 
 
 ## Agent skills
 
-Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claude Code, and similar). Music Video **Copy skill command** includes the Comfy origin, song path, and timed lyrics. The music-video skill does not download torch; it reuses this Comfy install.
+Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claude Code, and similar). Prefer these over Local Prompter when you can — the prompts are higher quality. Music Video **Copy skill command** includes the Comfy origin, song path, and timed lyrics. The music-video skill does not download torch; it reuses this Comfy install.
 
 ## Dependencies
 
