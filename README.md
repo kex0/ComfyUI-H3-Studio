@@ -4,15 +4,23 @@ With this extension you can create videos of any length with MiniMax H3 in Comfy
 
 Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → **Local Prompter** or an [agent skill](skills/README.md) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**.
 
+<details>
+
+<summary>EXAMPLE VIDEOS</summary>
+
+### No postprocessing, raw output from the nodes (slightly compressed)
+
 https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/autochain-loop.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-1.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-2.mp4
 
 https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-1.mp4
 
 https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-2.mp4
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-1.mp4
-
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-2.mp4
+</details>
 
 ## Builder
 
@@ -36,8 +44,6 @@ Video and audio open a trim timeline. Clip count follows the Builder **segments*
 
 ![Lyrics Timer](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer.webp)
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer-demo.mp4
-
 Stamp lyric times onto your song. Paste lyrics that match the vocal as closely as possible, upload the audio, then press **Time lyrics**. Queue this node **without H3 loaded**; the first run downloads torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Already-stamped confirm LRC (`[start-end]`) is not overwritten.
 
 **Timeline:** drag the A/B handles to a phrase, then **Add A–B**. Click a line to select it. **Live Edit** rewrites that line's times as you drag. Double-click a line to edit the words. Play A–B to check the match.
@@ -45,6 +51,10 @@ Stamp lyric times onto your song. Paste lyrics that match the vocal as closely a
 **Lyric syntax:** `~word~` is a held syllable. `<instrumental>` is a rest with no singing (own line).
 
 Wire `song` and `lyrics` into Builder (Music Video mode). The [music-video skill](skills/README.md) posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton).
+
+### WARNING LOUD AUDIO
+https://github.com/user-attachments/assets/5b6bdb6f-00fc-4bc7-9d03-ddbe2f624ef4
+
 
 ## Local Prompter
 
@@ -144,8 +154,6 @@ Same idea as Auto Chain Clip Fixer for a Music Video chain: same sockets as Musi
 
 ![Face Refine Video](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/face-refine-video.webp)
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/face-refine-debug-example.mp4
-
 Sharpens small faces on a finished clip. Close-ups are left alone.
 
 1. Set `video_path` to the PNG folder from Music Video / Auto Chain `chain_info`, or to an MP4.
@@ -154,6 +162,8 @@ Sharpens small faces on a finished clip. Close-ups are left alone.
 4. Queue after the video is done.
 
 Turn on **seamless loop** if the clip should loop. Faces that need refine at both ends are generated as one wrap-around pass and split back onto the start and end. `IMAGE` is the refined temp PNG sequence. `AUDIO` is the wired song, or the soundtrack from that video (MP4, or a PNG folder next to that MP4). Each run prints a disk/RAM banner first.
+
+https://github.com/user-attachments/assets/f02400eb-04b1-42c8-b528-3060dd233c82
 
 ## Prompt editor
 
@@ -191,6 +201,11 @@ Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claud
 - llama.cpp (`llama-server`) for Local Prompter — see [Install llama.cpp](#install-llamacpp)
 - `ultralytics`, `scipy`, `insightface` for Face Refine
 - MaskVidExperiments is optional (crop-teleport packing). Without it, Face Refine falls back to gaussian crop follow
+
+## Thanks for the inspiration
+- https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy
+- https://github.com/ukr8b3g-cmyk/ComfyUI-H3-Continuum
+- https://github.com/Carasibana/ComfyUI-H3-FaceRefine
 
 ## License
 
