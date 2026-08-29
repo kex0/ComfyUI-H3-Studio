@@ -4,7 +4,15 @@ With this extension you can create videos of any length with MiniMax H3 in Comfy
 
 Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → **Local Prompter** or an [agent skill](skills/README.md) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**.
 
-This pack does not import Herrgotts or ComfyUI-H3-FaceRefine. Class names are unique so both packs can sit in the same ComfyUI.
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/autochain-loop.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-1.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-2.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-1.mp4
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-2.mp4
 
 ## Builder
 
@@ -18,10 +26,6 @@ Or click **Copy skill command** and paste into an agent that has `/prompt-minima
 
 ![Builder image crop](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-image-edit.webp)
 
-Right-click a still for crop, first-frame lock, unused, and remove. Crop sets which part of the picture H3 sees.
-
-![Builder image context menu](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-image-context-menu.webp)
-
 ![Builder video trim](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/builder-video-edit.webp)
 
 Video and audio open a trim timeline. Clip count follows the Builder **segments** widget. Shift + drag moves all segments at once.
@@ -30,7 +34,9 @@ Video and audio open a trim timeline. Clip count follows the Builder **segments*
 
 ## Lyrics Timer
 
-[![Lyrics Timer — click for a short demo](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer.webp)](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer-demo.mp4)
+![Lyrics Timer](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer.webp)
+
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/lyrics-timer-demo.mp4
 
 Stamp lyric times onto your song. Paste lyrics that match the vocal as closely as possible, upload the audio, then press **Time lyrics**. Queue this node **without H3 loaded**; the first run downloads torchaudio wav2vec2 (`WAV2VEC2_ASR_BASE_960H`). Already-stamped confirm LRC (`[start-end]`) is not overwritten.
 
@@ -38,7 +44,7 @@ Stamp lyric times onto your song. Paste lyrics that match the vocal as closely a
 
 **Lyric syntax:** `~word~` is a held syllable. `<instrumental>` is a rest with no singing (own line).
 
-Wire `song` and `lyrics` into Builder (Music Video mode). The [music-video skill](skills/README.md) posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton). Parakeet / WhisperX stay out of Comfy's venv.
+Wire `song` and `lyrics` into Builder (Music Video mode). The [music-video skill](skills/README.md) posts the same wav2vec2 refine to `/h3_studio_song/plan` (letter clocks + CLIP skeleton).
 
 ## Local Prompter
 
@@ -50,11 +56,13 @@ Writes Auto Chain or Music Video prompts on your machine from the Builder pack. 
 2. Pick a GGUF and queue **without H3 loaded**. The node unloads Comfy models, starts `llama-server` on `127.0.0.1`, generates each clip, then kills the server.
 3. Copy `prompts` into Auto Chain or Music Video.
 
-The node does not bundle llama.cpp. Install the official binaries, then either drop the catalog GGUF in `ComfyUI/models/LLM/` or enable `allow_download` once (~16 GB from Hugging Face). You can also pick a scanned `local:…gguf` or **Local GGUF** plus `gguf_path`. 27B Q4_K_M and H3 cannot share 32 GB VRAM; queue the video graph after the prompter finishes.
+The node does not bundle llama.cpp. Install the official binaries, then either drop the catalog GGUF in `ComfyUI/models/LLM/` or enable `allow_download` once (~16 GB from Hugging Face). You can also pick a scanned `local:…gguf` or **Local GGUF** plus `gguf_path`. Queue the video graph after the prompter finishes.
 
 Music Video packs need timed lyrics from Lyrics Timer first. Untimed lyrics fail until you Time lyrics. Local Prompter letter-refines locked confirm lines, plans CLIP windows from the song length, and writes `mode: music_video` with `time:` / `lyrics:` locked.
 
 ### Install llama.cpp
+
+Ask your AI agent to install llama.cpp for this node, or follow the steps below.
 
 Download a release from [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp/releases). Nightly tags (`b#####`) ship the platform zips; `v0.3.0`-style tags may only point at the latest nightly.
 
@@ -136,6 +144,8 @@ Same idea as Auto Chain Clip Fixer for a Music Video chain: same sockets as Musi
 
 ![Face Refine Video](https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/face-refine-video.webp)
 
+https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/face-refine-debug-example.mp4
+
 Sharpens small faces on a finished clip. Close-ups are left alone.
 
 1. Set `video_path` to the PNG folder from Music Video / Auto Chain `chain_info`, or to an MP4.
@@ -184,4 +194,4 @@ Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claud
 
 ## License
 
-Continuation / Music Video / Auto Chain / Lyrics Timer code is GPL-3.0 (see `LICENSE`). Face Refine code is MIT (see `LICENSE-FaceRefine`). Combined, this pack is distributed under GPL-3.0.
+[MIT](LICENSE).
