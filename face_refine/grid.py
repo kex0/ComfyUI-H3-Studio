@@ -86,7 +86,7 @@ def shot_spans(breaks, n_frames):
 
 
 def _shot_need_hulls(need, breaks):
-    """Whole MaskVid shot when any frame needs paste, including leading/trailing close-ups."""
+    """Whole packing shot when any frame needs paste, including leading/trailing close-ups."""
     need = np.asarray(need, dtype=bool)
     n = int(need.size)
     hulls = []
@@ -225,7 +225,7 @@ def _join_wrap_span(take_head, take_tail, n_frames, max_chunk, min_refine):
 def wrap_refine_window(need, n_frames, max_chunk, min_refine=MIN_REFINE, overlap=0):
     """(tail_start, head_end) for a wrap-around H3 *write*, or None.
 
-    Uses paste-need at the actual join, not shot hulls. Adjacent MaskVid
+    Uses paste-need at the actual join, not shot hulls. Adjacent packing
     shots that meet in the middle still wrap. ``overlap`` reserves Continue
     context on both sides so the H3 generate can freeze the previous clip's
     ending and the following clip's opening, same sandwich as Auto Chain.
@@ -312,16 +312,16 @@ def _keep_interior_segs(segs, head_end, tail_start):
 def pack_refine_chunks(need, n_frames, max_chunk, overlap=0, merge_gap=None,
                        breaks=None, boxes=None, src_size=None, min_refine=MIN_REFINE,
                        loop=False):
-    """H3 windows for whole MaskVid shots that need any paste; copy the rest.
+    """H3 windows for whole packing shots that need any paste; copy the rest.
 
-    ``max_chunk`` is a cap. Packing cuts are ``breaks`` (MaskVid crop
-    teleports). Leading/trailing close-ups stay in the H3 window so paste
-    can ramp. Hulls shorter than ``min_refine`` are copied. Long hulls
-    split like ``chunk_ranges``. ``boxes`` + ``src_size`` is only a
-    fallback when ``breaks`` is omitted.
+    ``max_chunk`` is a cap. Packing cuts are ``breaks`` (crop teleports).
+    Leading/trailing close-ups stay in the H3 window so paste can ramp.
+    Hulls shorter than ``min_refine`` are copied. Long hulls split like
+    ``chunk_ranges``. ``boxes`` + ``src_size`` is only a fallback when
+    ``breaks`` is omitted.
 
     ``loop`` adds a wrap-around ``loop`` chunk when the join frames need
-    paste, so last/first are generated as one clip even if a MaskVid cut
+    paste, so last/first are generated as one clip even if a packing cut
     sits between the last shot and the first.
 
     Returns (start, end, grid, kind) with kind ``refine``, ``copy``, or ``loop``.
@@ -732,7 +732,7 @@ def box_iou(a, b):
 
 
 def shot_breaks_from_boxes(boxes, iou_min=0.4):
-    """True where consecutive crop boxes jump (MaskVid hold-then-cut)."""
+    """True where consecutive crop boxes jump (hold-then-cut)."""
     n = len(boxes)
     br = np.zeros(n, dtype=bool)
     if n:
@@ -837,6 +837,59 @@ def smooth_per_shot(vals, breaks, window=9, causal=False, loop=False):
     return out
 
 
+def _face_crop_box(cx, cy, sz, crop_factor, aspect, W, H):
+    """Aspect-locked crop around a face, clamped to the source frame."""
+    bh = max(float(sz), 1.0) * float(crop_factor)
+    bw = bh * float(aspect)
+    if bw > W:
+        bw, bh = W, W / max(float(aspect), 1e-6)
+    if bh > H:
+        bh, bw = H, H * float(aspect)
+    if bw > W:
+        bw, bh = W, W / max(float(aspect), 1e-6)
+    x = min(max(float(cx) - bw * 0.5, 0.0), max(0.0, W - bw))
+    y = min(max(float(cy) - bh * 0.5, 0.0), max(0.0, H - bh))
+    return (float(x), float(y), float(bw), float(bh))
+
+
+def _face_inside_box(box, cx, cy, fw, sz):
+    """True if the face rect still sits inside the held crop."""
+    x, y, w, h = box
+    fw = max(float(fw), 1.0)
+    sz = max(float(sz), 1.0)
+    fx0 = float(cx) - fw * 0.5
+    fy0 = float(cy) - sz * 0.5
+    return (
+        fx0 >= x - 1e-3
+        and fy0 >= y - 1e-3
+        and fx0 + fw <= x + w + 1e-3
+        and fy0 + sz <= y + h + 1e-3
+    )
+
+
+def plan_hold_teleports(H, W, cx, cy, fw, sz, crop_factor, aspect,
+                        seamless_loop=False):
+    """Hold one crop until the face leaves it, then jump. No easing across cuts."""
+    H, W = float(H), float(W)
+    aspect = float(aspect) if float(aspect) > 1e-6 else 1.0
+    cf = float(crop_factor)
+    n = len(cx)
+    boxes = []
+    hold = None
+    for i in range(n):
+        ideal = fit_box_to_aspect(
+            _face_crop_box(cx[i], cy[i], sz[i], cf, aspect, W, H), W, H, aspect,
+        )
+        if hold is None or not _face_inside_box(hold, cx[i], cy[i], fw[i], sz[i]):
+            hold = ideal
+        boxes.append(hold)
+    if seamless_loop and n > 1 and boxes:
+        first = boxes[0]
+        if _face_inside_box(first, cx[-1], cy[-1], fw[-1], sz[-1]):
+            boxes[-1] = first
+    return boxes, {"aspect": aspect}
+
+
 def follow_face_boxes(cx, cy, sz, crop_factor, src_w, src_h, aspect, breaks,
                       pos_window=9, size_window=15, loop=False):
     """Smooth pan and zoom inside a shot; snap on cuts. Face stays canvas-centred."""
@@ -881,29 +934,6 @@ def closeup_paste_gate(face_h, src_h, skip_frac, ramp=CLOSEUP_RAMP):
             refining = True
         out[i] = 1.0 if refining else 0.0
     return out
-
-
-def raster_face_masks(H, W, cx, cy, fw, sz, max_side=256):
-    """Downsampled bool stack of face rects. Planner only needs extents."""
-    n = len(cx)
-    scale = max(float(H), float(W), 1.0) / float(max_side)
-    h = max(8, int(round(H / scale)))
-    w = max(8, int(round(W / scale)))
-    sx, sy = W / float(w), H / float(h)
-    binary = np.zeros((n, h, w), dtype=bool)
-    for i in range(n):
-        fh = max(float(sz[i]), 1.0)
-        fww = max(float(fw[i]), 1.0)
-        x0 = int(np.floor((float(cx[i]) - fww * 0.5) / sx))
-        x1 = int(np.ceil((float(cx[i]) + fww * 0.5) / sx))
-        y0 = int(np.floor((float(cy[i]) - fh * 0.5) / sy))
-        y1 = int(np.ceil((float(cy[i]) + fh * 0.5) / sy))
-        x0 = min(max(x0, 0), w - 1)
-        x1 = min(max(x1, x0 + 1), w)
-        y0 = min(max(y0, 0), h - 1)
-        y1 = min(max(y1, y0 + 1), h)
-        binary[i, y0:y1, x0:x1] = True
-    return binary, sx, sy
 
 
 def latent_mask_to_frames(token_mask, n_frames, canvas_h, canvas_w):

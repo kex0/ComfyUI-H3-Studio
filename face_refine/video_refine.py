@@ -73,7 +73,7 @@ def _release_loaded_models():
 
 
 def _maskvid_pack_breaks(xform, n, src_w, src_h):
-    """MaskVid packing cuts: crop teleports. A zoom is not a cut."""
+    """Packing cuts: crop teleports. A zoom is not a cut."""
     if xform.get("maskvid_cut") == "center":
         stored = xform.get("maskvid_breaks")
         if stored is not None and len(stored) == n:
@@ -1480,7 +1480,7 @@ class H3StudioFaceRefineVideo:
             pack_line = (
                 f"packed {n_refine} H3 passes (max {max_chunk}f / {float(chunk_duration):g}s); "
                 f"{sampled_n}/{n} frames need paste, {n_copy} copy spans streamed; "
-                f"{n_mv} MaskVid teleports; uniform {max_chunk}f grid would be {uniform_n} passes"
+                f"{n_mv} crop teleports; uniform {max_chunk}f grid would be {uniform_n} passes"
             )
             if n_loop:
                 ls, le, lg, _ = next(c for c in chunks if c[3] == "loop")

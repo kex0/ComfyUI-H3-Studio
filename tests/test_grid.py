@@ -11,7 +11,7 @@ from grid import (
     chunk_ranges,     closeup_paste_weight, denoise_px_range, face_ellipse_mask, face_rect_in_canvas,
     face_token_video_mask, fit_box_to_aspect, h3_frame_groups, h3_latent_t,
     h3_steps_covering, latent_mask_to_frames, pack_av_noise_mask, pack_refine_chunks,
-    pack_refine_jobs, per_frame_strength, raster_face_masks, follow_face_boxes,
+    pack_refine_jobs, per_frame_strength, plan_hold_teleports, follow_face_boxes,
     reduce_mask_h3, refine_paste_weight, select_chunk_span, shot_breaks_from_boxes,
     shot_breaks_from_tracks, smooth_per_shot, closeup_paste_gate,
     sharpness_match_amount, segment_hold, job_hold, shot_spans, hard_cut_breaks,
@@ -755,53 +755,26 @@ class TestFaceTokenInpaint(unittest.TestCase):
         self.assertAlmostEqual(r[3], 40.0)
 
 
-class TestMaskVidZoomPlan(unittest.TestCase):
+class TestHoldTeleportPlan(unittest.TestCase):
     def test_scene_cut_jumps_instead_of_easing(self):
-        planner_path = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-            "MaskVidExperiments", "planner.py",
-        )
-        if not os.path.isfile(planner_path):
-            self.skipTest("MaskVidExperiments planner.py not found")
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("maskvid_planner_test", planner_path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        plan = mod.plan
         n = 40
         H, W = 360, 640
         cx = np.array([80.0] * 20 + [560.0] * 20)
         cy = np.array([80.0] * 20 + [280.0] * 20)
         sz = np.array([80.0] * 20 + [40.0] * 20)
         fw = sz.copy()
-        binary, sx, sy = raster_face_masks(H, W, cx, cy, fw, sz)
-        p = {
-            "crop_scale": 2.5,
-            "min_padding_allowed": 0.7,
-            "min_padding_allowed_window": 1,
-            "pad_deficit_tol": 16.0,
-            "pad_surplus_tol": 8.0,
-            "resize_cost": 1.0,
-            "movement_cost": 1.0,
-            "center_pull": 1e-4,
-            "end_tightening": 0.0,
-            "end_tightening_window": 0,
-            "zoom_step": 1.0,
-            "max_zoom_rate": 0.0,
-            "aspect_ratio": 1.0,
-            "seamless_loop": False,
-        }
-        boxes, _info = plan(binary, "zoomed", p, divisible_by=1)
-        xs = np.array([b["x"] * sx for b in boxes])
-        ys = np.array([b["y"] * sy for b in boxes])
-        hs = np.array([b["height"] * sy for b in boxes])
+        boxes, _info = plan_hold_teleports(
+            H, W, cx, cy, fw, sz, crop_factor=2.5, aspect=1.0, seamless_loop=False,
+        )
+        xs = np.array([b[0] for b in boxes])
+        ys = np.array([b[1] for b in boxes])
+        hs = np.array([b[3] for b in boxes])
         jump = abs(xs[20] - xs[19]) + abs(ys[20] - ys[19])
         eased = abs(xs[10] - xs[0]) + abs(ys[10] - ys[0])
         self.assertGreater(jump, 200.0)
         self.assertLess(eased, 80.0)
         self.assertGreater(float(hs[:20].mean()), float(hs[20:].mean()) * 1.3)
-        fitted = [fit_box_to_aspect((xs[i], ys[i], boxes[i]["width"] * sx, hs[i]), W, H, 1.0)
-                  for i in range(n)]
+        fitted = [fit_box_to_aspect(boxes[i], W, H, 1.0) for i in range(n)]
         for b in fitted:
             self.assertAlmostEqual(b[2], b[3], delta=1.0)
             self.assertLessEqual(b[2], W + 1e-6)

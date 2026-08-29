@@ -200,12 +200,12 @@ Copy the folders in [`skills/`](skills/README.md) into your agent (Cursor, Claud
 - ComfyUI MiniMax H3 (stock nodes, not a custom pack)
 - llama.cpp (`llama-server`) for Local Prompter — see [Install llama.cpp](#install-llamacpp)
 - `ultralytics`, `scipy`, `insightface` for Face Refine
-- MaskVidExperiments is optional (crop-teleport packing). Without it, Face Refine falls back to gaussian crop follow
 
 ## Thanks for the inspiration
 - https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy
 - https://github.com/ukr8b3g-cmyk/ComfyUI-H3-Continuum
 - https://github.com/Carasibana/ComfyUI-H3-FaceRefine
+- https://github.com/drozbay/MaskVidExperiments
 
 ## License
 

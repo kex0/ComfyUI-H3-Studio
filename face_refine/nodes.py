@@ -13,7 +13,7 @@ import folder_paths
 from .grid import (
     FACE_INPAINT_DILATION, face_rect_in_canvas, face_token_video_mask,
     fit_box_to_aspect, follow_face_boxes, hard_cut_breaks, pack_av_noise_mask,
-    raster_face_masks, shot_breaks_from_boxes, shot_breaks_from_tracks,
+    plan_hold_teleports, shot_breaks_from_boxes, shot_breaks_from_tracks,
     smooth_per_shot,
 )
 
@@ -183,60 +183,6 @@ def _interp_gaps(vals: np.ndarray, valid: np.ndarray, loop=False) -> np.ndarray:
     vi_ext = np.concatenate([vi - n, vi, vi + n])
     vv_ext = np.concatenate([vv, vv, vv])
     return np.interp(idx, vi_ext, vv_ext)
-
-
-def _maskvid_plan():
-    here = os.path.dirname(os.path.abspath(__file__))
-    custom_nodes = os.path.dirname(os.path.dirname(here))
-    path = os.path.join(custom_nodes, "MaskVidExperiments", "planner.py")
-    if os.path.isfile(path):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("maskvid_planner", path)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.plan
-    try:
-        from MaskVidExperiments.planner import plan
-        return plan
-    except ImportError:
-        return None
-
-
-def _plan_zoom_crops(H, W, cx, cy, fw, sz, crop_factor, aspect, seamless_loop=False):
-    """MaskVid zoomed planner: hold still, jump on cuts. Raises on failure."""
-    plan = _maskvid_plan()
-    if plan is None:
-        raise RuntimeError("MaskVidExperiments planner not found")
-    binary, sx, sy = raster_face_masks(H, W, cx, cy, fw, sz)
-    p = {
-        "crop_scale": float(crop_factor),
-        "min_padding_allowed": 0.7,
-        "min_padding_allowed_window": 1,
-        "pad_deficit_tol": 16.0,
-        "pad_surplus_tol": 8.0,
-        "resize_cost": 1.0,
-        "movement_cost": 1.0,
-        "center_pull": 1e-4,
-        "end_tightening": 0.0,
-        "end_tightening_window": 0,
-        "zoom_step": 1.0,
-        "max_zoom_rate": 0.0,
-        "aspect_ratio": float(aspect),
-        "seamless_loop": bool(seamless_loop),
-    }
-    planned, info = plan(binary, "zoomed", p, divisible_by=1)
-    boxes = []
-    for b in planned:
-        x = float(b["x"]) * sx
-        y = float(b["y"]) * sy
-        bw = float(b["width"]) * sx
-        bh = float(b["height"]) * sy
-        x = min(max(x, 0.0), max(0.0, W - 1.0))
-        y = min(max(y, 0.0), max(0.0, H - 1.0))
-        bw = min(max(bw, 1.0), float(W) - x)
-        bh = min(max(bh, 1.0), float(H) - y)
-        boxes.append((float(x), float(y), float(bw), float(bh)))
-    return boxes, info
 
 
 def _smooth(vals: np.ndarray, window: int, method: str = "gaussian") -> np.ndarray:
@@ -703,30 +649,19 @@ class H3FaceTrackCrop:
             canvas_width = canvas_height = snapped
 
         aspect = canvas_width / float(max(canvas_height, 1))
-        planned = None
         crop_plan = "face_follow"
-        plan_note = "cuts from face jumps"
-        try:
-            planned, info = _plan_zoom_crops(
-                H, W, raw_cx, raw_cy, raw_fw, raw_sz, crop_factor, aspect,
-                seamless_loop=seamless_loop,
-            )
-            plan_note = (
-                f"cuts from MaskVid + face jumps (planner aspect "
-                f"{info.get('aspect', aspect):.3f})"
-            )
-        except Exception as exc:
-            plan_note = f"cuts from face jumps ({exc})"
-            print(f"[H3FaceRefine] MaskVid crop plan skipped: {exc}")
-
+        planned, info = plan_hold_teleports(
+            H, W, raw_cx, raw_cy, raw_fw, raw_sz, crop_factor, aspect,
+            seamless_loop=seamless_loop,
+        )
+        planned = [fit_box_to_aspect(b, W, H, aspect) for b in planned]
+        maskvid_breaks = hard_cut_breaks(planned, W, H)
         breaks = shot_breaks_from_tracks(raw_cx, raw_cy, raw_sz)
-        maskvid_breaks = np.zeros(B, dtype=bool)
-        if B:
-            maskvid_breaks[0] = True
-        if planned is not None:
-            planned = [fit_box_to_aspect(b, W, H, aspect) for b in planned]
-            maskvid_breaks = hard_cut_breaks(planned, W, H)
-            breaks = breaks | shot_breaks_from_boxes(planned)
+        breaks = breaks | shot_breaks_from_boxes(planned)
+        plan_note = (
+            f"cuts from crop teleports + face jumps (planner aspect "
+            f"{info.get('aspect', aspect):.3f})"
+        )
         boxes, cx_s, cy_s, sz_s = follow_face_boxes(
             raw_cx, raw_cy, raw_sz, crop_factor, W, H, aspect, breaks,
             pos_window=9, size_window=15, loop=seamless_loop,
@@ -735,7 +670,7 @@ class H3FaceTrackCrop:
         n_shots = int(breaks.sum())
         n_mv = int(maskvid_breaks.sum())
         plan_note = (
-            f"{plan_note}; {n_shots} crop snaps, {n_mv} MaskVid packing cuts, "
+            f"{plan_note}; {n_shots} crop snaps, {n_mv} packing cuts, "
             f"smooth pan/zoom in-shot"
         )
         print(f"[H3FaceRefine] {plan_note}")
