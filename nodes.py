@@ -488,9 +488,9 @@ class H3ContinuousContinue:
                 "reference_image": ("IMAGE", {"tooltip": "Optional identity/style reference. Address it as <Picture 1>. Encoded as a Ref2VA image ref (Qwen + DiT)."}),
                 "identity_frame": ("IMAGE", {"tooltip": "Last overlap decoded still from the previous clip. Used as an I2V-style appearance lock for the rest of this clip. Does not freeze motion. Auto Chain / Music Video fill this automatically."}),
                 "freeze_overlap": ("BOOLEAN", {"default": True,
-                    "tooltip": "Copy the previous clip's overlap video tokens into this clip and do not denoise them. Stitch still discards that overlap. Turn off to compare against regenerated-head Continue."}),
-                "overlap_soft_steps": ("INT", {"default": 2, "min": 0, "max": 4, "step": 1,
-                    "tooltip": "When freeze_overlap is on, the last N frozen video steps get a light denoise ramp so the first kept frames are not a hard inpaint edge. 0 = hard freeze. 2 is the starting point."}),
+                    "tooltip": "Copy the previous clip's overlap video tokens into this clip and do not denoise them. Overlap is not also packed as H3 keyframes unless this clip sandwiches another latent. Stitch still discards that overlap. Turn off to compare against regenerated-head Continue."}),
+                "overlap_soft_steps": ("INT", {"default": 0, "min": 0, "max": 4, "step": 1,
+                    "tooltip": "When freeze_overlap is on, 0 keeps the overlap hard-frozen. 1–4 ramp the last N frozen video steps toward denoise so the first kept frames are not a hard inpaint edge. 0 is the starting point."}),
             },
         }
 
@@ -503,7 +503,7 @@ class H3ContinuousContinue:
     def build(self, clip, vae, previous_latent, prompt, width, height, length,
               context_frames="22", handover_mode="auto", alignment_mode="phase_aligned_extended",
               manual_landing_tail_frames=34, ref_image_size="match", freeze_overlap=True,
-              overlap_soft_steps=2, handover=None,
+              overlap_soft_steps=0, handover=None,
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,
@@ -559,13 +559,17 @@ class H3ContinuousContinue:
         # so these offsets exactly match the target clip's canonical head grid.
         # The retained phase_aware fallback can still use non-canonical source-relative
         # offsets for A/B comparison with v0.4.1.
+        pack_overlap_kfs = not (bool(freeze_overlap) and end_latent is None)
         keyframes = []
-        for k, pixel_offset in enumerate(sl["offsets"]):
-            keyframes.append({
-                "resolved_frame_index": 0,
-                HC_INDEX: int(pixel_offset),
-                "latent": source[:, :, k:k + 1],
-            })
+        if pack_overlap_kfs:
+            for k, pixel_offset in enumerate(sl["offsets"]):
+                keyframes.append({
+                    "resolved_frame_index": 0,
+                    HC_INDEX: int(pixel_offset),
+                    "latent": source[:, :, k:k + 1],
+                })
+        else:
+            freeze_note_extra += ", overlap not packed as keyframes"
 
         last = None
         keyframe_images = []
@@ -1241,7 +1245,7 @@ class H3ContinuousContinueV1(H3ContinuousContinue):
     def build(self, clip, vae, previous_latent, prompt, width, height, duration,
               context_frames="22", handover_mode="auto", alignment_mode="phase_aligned_extended",
               manual_landing_tail_frames=34, ref_image_size="match", freeze_overlap=True,
-              overlap_soft_steps=2, handover=None,
+              overlap_soft_steps=0, handover=None,
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,

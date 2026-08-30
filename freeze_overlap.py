@@ -3,7 +3,7 @@
 import torch
 
 
-def freeze_video_head(video, source_head, audio, soft_steps=2):
+def freeze_video_head(video, source_head, audio, soft_steps=0):
     """Paste ``source_head`` onto the start of ``video`` and build denoise masks.
 
     Denoise mask convention: 1 = sample, 0 = keep. Audio is fully sampled.

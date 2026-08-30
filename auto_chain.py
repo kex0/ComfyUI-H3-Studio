@@ -287,11 +287,11 @@ class H3StudioAutoChain:
                 }),
             "freeze_overlap": ("BOOLEAN", {
                 "default": True,
-                "tooltip": "Continue clips copy the previous overlap video tokens and do not denoise them. Stitch still discards that overlap. Turn off to A/B against regenerated-head Continue.",
+                "tooltip": "Continue clips copy the previous overlap video tokens and do not denoise them. Overlap is not also packed as H3 keyframes unless this clip sandwiches another latent. Stitch still discards that overlap. Turn off to A/B against regenerated-head Continue.",
             }),
             "overlap_soft_steps": ("INT", {
-                "default": 2, "min": 0, "max": 4, "step": 1,
-                "tooltip": "When freeze_overlap is on, the last N frozen video steps get a light denoise ramp so the first kept frames are not a hard inpaint edge. 0 = hard freeze (can look overcooked just after the overlap). 2 is the starting point.",
+                "default": 0, "min": 0, "max": 4, "step": 1,
+                "tooltip": "When freeze_overlap is on, 0 keeps the overlap hard-frozen. 1–4 ramp the last N frozen video steps toward denoise so the first kept frames are not a hard inpaint edge. 0 is the starting point.",
             }),
             "latent_prefix": ("STRING", {
                 "default": "h3_auto_chain/clip",
@@ -377,7 +377,7 @@ class H3StudioAutoChain:
     def _generate_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
                  width, height, duration, segments=None, context_frames="22",
                  handover_preset="Balanced", save_segment_latents=True, save_clip_videos=True,
-                 freeze_overlap=True, overlap_soft_steps=2,
+                 freeze_overlap=True, overlap_soft_steps=0,
                  latent_prefix="h3_auto_chain/clip", resume_from_clip=1,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0,
                  max_safe_tail_bridge_frames=2,
@@ -758,7 +758,7 @@ class H3StudioAutoChain:
     def _generate_fix_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise,
                  width, height, duration, context_frames="22",
                  handover_preset="Balanced", save_segment_latents=True, save_clip_videos=True,
-                 freeze_overlap=True, overlap_soft_steps=2,
+                 freeze_overlap=True, overlap_soft_steps=0,
                  latent_prefix="h3_auto_chain/clip",
                  video_crossfade_frames=4, audio_crossfade_ms=15.0,
                  max_safe_tail_bridge_frames=2, save_images_to_disk=False,
