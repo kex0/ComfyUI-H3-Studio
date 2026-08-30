@@ -17,6 +17,7 @@ from .chain_inputs import (
     collect_segment_models, segment_prompt_specs,
 )
 from .latent_math import CONTEXT_TO_STEPS, FPS, loop_wrap_start_frames, pixel_frames
+from .model_wrap import wrap_h3_model
 from .node_help import NODE_HELP
 from .spectrum_join import attach_spectrum_join_prefix
 
@@ -81,6 +82,7 @@ def _segment_noise(noise, index):
 
 
 def _sample_segment(model, positive, sampler, sigmas, noise, latent, join_prefix=False):
+    model = wrap_h3_model(model)
     guider = Guider_Basic(model)
     guider.set_conds(positive)
     attach_spectrum_join_prefix(guider, join_prefix)

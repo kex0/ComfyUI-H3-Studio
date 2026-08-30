@@ -9,7 +9,7 @@ def _load():
     import types
 
     root = Path(__file__).resolve().parents[1]
-    pkg = "herrgotts_h3_suite_testpkg"
+    pkg = "h3_studio_testpkg"
     if pkg not in sys.modules:
         module = types.ModuleType(pkg)
         module.__path__ = [str(root)]

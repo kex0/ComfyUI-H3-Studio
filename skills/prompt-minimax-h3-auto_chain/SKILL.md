@@ -14,7 +14,7 @@ disable-model-invocation: true
 One **H3 Studio prompt** document for **H3 Studio - Auto Chain** or **Auto Chain Advanced**. Each `## Clip` (and optional `## Loop`) has its own `subject_definitions` with the dump labels that clip loads. Paste the whole document into the node's `prompt` field. Advanced clip 1 may also lock MiniMax's first image when the dump marks a still `(first frame)` (hybrid FL2VA start + Ref2VA refs).
 
 - **Advanced (default when a Builder dump is present):** Wire **Builder → Auto Chain Advanced**. Keep the Ref2VA body. If a dump Picture line ends with ` (first frame)`, that still is MiniMax's first image for clip 1 and may still be cited as `<Picture N>` for identity. Unmarked pictures stay identity/style refs only. Do not use the original Auto Chain model / picture sockets.
-- **Original Auto Chain / Herrgotts:** only if the user says they are on that node. Clip 1 may then use I2VA/FL2VA first-frame alignment from `prompt-minimax-h3/reference-base.md`.
+- **Original Auto Chain:** only if the user says they are on that node. Clip 1 may then use I2VA/FL2VA first-frame alignment from `prompt-minimax-h3/reference-base.md`.
 
 Single-clip H3 stays on `prompt-minimax-h3`. Lipsync-to-song stays on `prompt-minimax-h3-music-video`.
 

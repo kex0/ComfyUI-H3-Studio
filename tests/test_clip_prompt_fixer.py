@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = "herrgotts_h3_suite_testpkg"
+PKG = "h3_studio_testpkg"
 
 FULL = """H3 Studio prompt
 mode: music_video

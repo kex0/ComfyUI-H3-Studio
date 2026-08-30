@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = "herrgotts_h3_suite_testpkg"
+PKG = "h3_studio_testpkg"
 
 
 def _load(name):
@@ -554,6 +554,7 @@ def test_continue_samples_request_spectrum_join_prefix():
     auto_chain = (ROOT / "auto_chain.py").read_text(encoding="utf-8")
     music_video = (ROOT / "music_video.py").read_text(encoding="utf-8")
     assert "attach_spectrum_join_prefix" in auto_chain
+    assert "wrap_h3_model(model)" in auto_chain
     assert 'join_prefix=(role != "Start")' in auto_chain
     assert "join_prefix=True" in auto_chain
     assert "join_prefix=(i != 0)" in music_video
