@@ -619,16 +619,19 @@ def test_builder_media_socket():
     builder_js = (ROOT / "web" / "js" / "builder.js").read_text(encoding="utf-8")
     media_js = (ROOT / "web" / "js" / "builderMedia.js").read_text(encoding="utf-8")
     thumbs_js = (ROOT / "web" / "js" / "thumbs.js").read_text(encoding="utf-8")
-    assert '"media": ("*"' in builder
+    assert "MEDIA_SLOT_TYPE = \"IMAGE,VIDEO,AUDIO\"" in builder
+    assert '"media": (MEDIA_SLOT_TYPE' in builder
     assert 'f"media_{i}"' in builder
     assert 'f"media_type_{i}"' in builder
     assert '{"hidden": True}' in builder
     assert "collect_socket_media" in builder
     assert "crop_image_tensor" in builder
     assert "sockets=collect_socket_media" in builder
+    assert 'MEDIA_SLOT_TYPE = "IMAGE,VIDEO,AUDIO"' in media_js
     assert "h3_studio_builder_media_links" in media_js
     assert "function addVirtualLink" in media_js
     assert "function syncBuilderMediaList" in media_js
+    assert "onConnectInputBuilderMedia" in media_js
     assert "app.graphToPrompt" in media_js
     assert "installBuilderMediaNode" in builder_js
     assert "syncBuilderMediaList" in builder_js
@@ -636,6 +639,7 @@ def test_builder_media_socket():
     assert "or wire them to Media" in builder_js
     assert "moveInput(node, mediaIdx, 0)" in builder_js
     assert "mediaAt + 1" in builder_js
+    assert 'addInput?.("media", MEDIA_SLOT_TYPE)' in builder_js
     assert 'key === "image"' in thumbs_js
     torch = pytest.importorskip("torch")
     ns = {"torch": torch}
@@ -646,6 +650,10 @@ def test_builder_media_socket():
         ns,
     )
     assert ns["infer_media_type"]({"waveform": True, "sample_rate": 8}) == "audio"
+    assert ns["infer_media_type"](torch.zeros(1, 2, 2, 3)) == "image"
+    assert ns["infer_media_type"](object()) == ""
+    with pytest.raises(ValueError, match="IMAGE, VIDEO, or AUDIO"):
+        ns["_require_media_kind"]("", object())
     exec(
         "def crop_box"
         + builder.split("def crop_box", 1)[1].split("def slice_audio", 1)[0]

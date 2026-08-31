@@ -2,6 +2,7 @@ import { app } from "../../scripts/app.js";
 
 const NODE_NAME = "H3StudioBuilder";
 const LINKS_PROP = "h3_studio_builder_media_links";
+export const MEDIA_SLOT_TYPE = "IMAGE,VIDEO,AUDIO";
 const MAX_IMAGES = 9;
 const MAX_VIDEOS = 3;
 const MAX_AUDIOS = 3;
@@ -93,13 +94,16 @@ function getSlotType(slot) {
 
 export function getMediaType(sourceType, sourceNode = null) {
     const type = String(sourceType || "").toUpperCase();
-    if (type.includes("AUDIO")) return "audio";
-    if (type.includes("VIDEO")) return "video";
-    if (type.includes("IMAGE")) return "image";
+    const parts = type.split(",").map((part) => part.trim()).filter(Boolean);
+    if (parts.some((part) => part.includes("AUDIO"))) return "audio";
+    if (parts.some((part) => part.includes("VIDEO"))) return "video";
+    if (parts.some((part) => part.includes("IMAGE"))) return "image";
+    if (parts.length && parts.every((part) => part !== "*")) return "";
     const name = String(sourceNode?.comfyClass || sourceNode?.type || "").toLowerCase();
     if (name.includes("audio")) return "audio";
     if (name.includes("video")) return "video";
-    return "image";
+    if (name.includes("image")) return "image";
+    return "";
 }
 
 function widgetPath(widget) {
@@ -168,8 +172,8 @@ export function addVirtualLink(targetNode, sourceNode, sourceSlot, sourceType, m
     const sourceId = Number(sourceNode.id);
     if (!Number.isFinite(sourceId)) return false;
     mediaType ||= getMediaType(sourceType, sourceNode);
-    if (hasVirtualLink(targetNode, sourceId, sourceSlot)) return false;
     if (!canAccept(targetNode, mediaType)) return false;
+    if (hasVirtualLink(targetNode, sourceId, sourceSlot)) return false;
     ensureLinks(targetNode).push({
         source_id: sourceId,
         source_slot: Number(sourceSlot) || 0,
@@ -373,6 +377,21 @@ function getNativeGraphLink(graph, linkId) {
     return null;
 }
 
+function clearNativeMediaLink(targetNode, inputIndex, linkId) {
+    const graph = targetNode?.graph || app.graph;
+    targetNode.__h3BuilderVirtualWireClearing = true;
+    try {
+        if (targetNode.inputs?.[inputIndex]?.link != null && typeof targetNode.disconnectInput === "function") {
+            targetNode.disconnectInput(inputIndex);
+        } else if (linkId != null && typeof graph?.removeLink === "function") {
+            graph.removeLink(linkId);
+        }
+        if (targetNode.inputs?.[inputIndex]) targetNode.inputs[inputIndex].link = null;
+    } finally {
+        targetNode.__h3BuilderVirtualWireClearing = false;
+    }
+}
+
 function convertNativeMediaConnection(targetNode, inputIndex, linkInfo = null) {
     if (!isTarget(targetNode) || targetNode.__h3BuilderVirtualWireClearing) return false;
     const input = targetNode.inputs?.[inputIndex];
@@ -398,20 +417,14 @@ function convertNativeMediaConnection(targetNode, inputIndex, linkInfo = null) {
     const output = sourceNode.outputs?.[sourceSlot] || {};
     const sourceType = getSlotType(output)
         || String(nativeLink.type || nativeLink.origin_type || nativeLink.originType || "*").toUpperCase();
+    const mediaType = getMediaType(sourceType, sourceNode);
     const exists = hasVirtualLink(targetNode, sourceNode.id, sourceSlot);
-    if (!exists && !canAccept(targetNode, getMediaType(sourceType, sourceNode))) return false;
-    addVirtualLink(targetNode, sourceNode, sourceSlot, sourceType);
-    targetNode.__h3BuilderVirtualWireClearing = true;
-    try {
-        if (targetNode.inputs?.[inputIndex]?.link != null && typeof targetNode.disconnectInput === "function") {
-            targetNode.disconnectInput(inputIndex);
-        } else if (linkId != null && typeof graph?.removeLink === "function") {
-            graph.removeLink(linkId);
-        }
-        if (targetNode.inputs?.[inputIndex]) targetNode.inputs[inputIndex].link = null;
-    } finally {
-        targetNode.__h3BuilderVirtualWireClearing = false;
+    if (!exists && !canAccept(targetNode, mediaType)) {
+        clearNativeMediaLink(targetNode, inputIndex, linkId);
+        return false;
     }
+    addVirtualLink(targetNode, sourceNode, sourceSlot, sourceType, mediaType);
+    clearNativeMediaLink(targetNode, inputIndex, linkId);
     targetNode.setDirtyCanvas?.(true, true);
     graph?.setDirtyCanvas?.(true, true);
     return true;
@@ -774,7 +787,7 @@ export function labelMediaInput(node) {
     if (!input) return;
     input.label = "media";
     input.hidden = false;
-    if (!input.type) input.type = "*";
+    input.type = MEDIA_SLOT_TYPE;
 }
 
 export function installBuilderMediaNode(nodeType, nodeData) {
@@ -792,6 +805,14 @@ export function installBuilderMediaNode(nodeType, nodeData) {
         labelMediaInput(this);
         patchCanvas();
         return result;
+    };
+    const originalConnectInput = nodeType.prototype.onConnectInput;
+    nodeType.prototype.onConnectInput = function onConnectInputBuilderMedia(inputIndex, outputType, outputSlot, outputNode) {
+        const input = this.inputs?.[Number(inputIndex)];
+        if (/^media(?:_\d+)?$/i.test(String(input?.name || ""))) {
+            if (!getMediaType(outputType, outputNode)) return false;
+        }
+        return originalConnectInput?.apply(this, arguments) ?? true;
     };
     const originalConnectionsChange = nodeType.prototype.onConnectionsChange;
     nodeType.prototype.onConnectionsChange = function onConnectionsChangeBuilderMedia(type, index, connected, linkInfo) {

@@ -225,7 +225,7 @@
         },
         {
           "name": "media",
-          "type": "*",
+          "type": "IMAGE,VIDEO,AUDIO",
           "link": null,
           "shape": 7
         }

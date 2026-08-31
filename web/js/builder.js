@@ -4,6 +4,7 @@ import { applyCropThumb, closeMediaLightbox, hasImageCrop, kindIconSvg, openPrev
 import { captureNodeSize, restoreNodeSizeSoon } from "./nodeSize.js";
 import { mountPromptEditor } from "./promptEditor.js";
 import {
+    MEDIA_SLOT_TYPE,
     installBuilderMediaNode,
     installBuilderMediaRuntime,
     isSocketMedia,
@@ -825,7 +826,7 @@ function syncModelInputs(node) {
 
     let mediaIdx = node.inputs.findIndex((slot) => slot?.name === "media");
     if (mediaIdx < 0) {
-        node.addInput?.("media", "*");
+        node.addInput?.("media", MEDIA_SLOT_TYPE);
         mediaIdx = node.inputs.findIndex((slot) => slot?.name === "media");
     }
     if (mediaIdx > 0) moveInput(node, mediaIdx, 0);

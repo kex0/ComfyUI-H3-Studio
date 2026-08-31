@@ -618,7 +618,7 @@
         },
         {
           "name": "media",
-          "type": "*",
+          "type": "IMAGE,VIDEO,AUDIO",
           "link": null,
           "shape": 7
         }
@@ -879,7 +879,7 @@
         true,
         true,
         true,
-        2,
+        0,
         "h3_music_video/clip",
         4,
         15,
@@ -897,7 +897,7 @@
         "save_segment_latents": true,
         "save_clip_videos": true,
         "freeze_overlap": true,
-        "overlap_soft_steps": 2,
+        "overlap_soft_steps": 0,
         "latent_prefix": "h3_music_video/clip",
         "video_crossfade_frames": 4,
         "audio_crossfade_ms": 15,

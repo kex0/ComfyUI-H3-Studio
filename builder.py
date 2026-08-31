@@ -28,6 +28,7 @@ DEFAULT_SEGMENTS = 2
 MODE_AUTO_CHAIN = "auto_chain"
 MODE_MUSIC_VIDEO = "music_video"
 MODE_CHOICES = (MODE_AUTO_CHAIN, MODE_MUSIC_VIDEO)
+MEDIA_SLOT_TYPE = "IMAGE,VIDEO,AUDIO"
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 VIDEO_EXT = {".mp4", ".webm", ".mov", ".mkv", ".avi"}
 AUDIO_EXT = {".wav", ".mp3", ".flac", ".ogg", ".m4a", ".aac", ".wma"}
@@ -89,27 +90,35 @@ def unique_builder_path(filename: str) -> str:
 def infer_media_type(value) -> str:
     if value is None:
         return ""
-    if isinstance(value, torch.Tensor):
-        return "image"
     if isinstance(value, dict) and "waveform" in value:
         return "audio"
     if hasattr(value, "get_components"):
         return "video"
-    return "image"
+    if isinstance(value, torch.Tensor):
+        return "image"
+    return ""
+
+
+def _require_media_kind(kind, value) -> str:
+    resolved = str(kind or "").strip().lower()
+    if resolved not in {"image", "video", "audio"}:
+        resolved = infer_media_type(value)
+    if resolved not in {"image", "video", "audio"}:
+        raise ValueError("h3_studio: media input only accepts IMAGE, VIDEO, or AUDIO")
+    return resolved
 
 
 def collect_socket_media(kwargs) -> dict:
     sockets = {}
     direct = kwargs.get("media")
     if direct is not None:
-        sockets[0] = (infer_media_type(direct), direct)
+        sockets[0] = (_require_media_kind("", direct), direct)
     for index in range(1, MAX_MIXED + 1):
         value = kwargs.get(f"media_{index}")
         if value is None:
             continue
         declared = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
-        kind = declared if declared in {"image", "video", "audio"} else infer_media_type(value)
-        sockets[index] = (kind, value)
+        sockets[index] = (_require_media_kind(declared, value), value)
     return sockets
 
 
@@ -702,14 +711,14 @@ class H3StudioBuilder:
                         "or wire Load Song. A connection disables the upload widget."
                     ),
                 }),
-                "media": ("*", {
+                "media": (MEDIA_SLOT_TYPE, {
                     "tooltip": (
                         "Connect IMAGE, VIDEO, or AUDIO. Multiple wires to this socket "
                         "appear immediately in the Builder list."
                     ),
                 }),
                 **{
-                    f"media_{i}": ("*", {"hidden": True})
+                    f"media_{i}": (MEDIA_SLOT_TYPE, {"hidden": True})
                     for i in range(1, MAX_MIXED + 1)
                 },
                 **{

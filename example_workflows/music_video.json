@@ -875,7 +875,7 @@
         true,
         true,
         true,
-        2,
+        0,
         "h3_music_video/clip",
         1,
         0,
@@ -897,7 +897,7 @@
         "save_segment_latents": true,
         "save_clip_videos": true,
         "freeze_overlap": true,
-        "overlap_soft_steps": 2,
+        "overlap_soft_steps": 0,
         "latent_prefix": "h3_music_video/clip",
         "resume_from_clip": 1,
         "stop_after_clip": 0,
@@ -1200,7 +1200,7 @@
           "localized_name": "media",
           "name": "media",
           "shape": 7,
-          "type": "*",
+          "type": "IMAGE,VIDEO,AUDIO",
           "link": null
         },
         {
