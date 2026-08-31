@@ -4,23 +4,28 @@ With this extension you can create videos of any length with MiniMax H3 in Comfy
 
 Install the pack, then look under category **H3 Studio**. Typical path: **Builder** (plus **Lyrics Timer** for a song) → an [agent skill](skills/README.md) (or **Local Prompter**) → **Auto Chain** or **Music Video** → optional clip fix and **Face Refine**. Example graphs: **Workflow → Browse Templates → ComfyUI-H3-Studio**. Prefer the skills when you can — the prompts are higher quality.
 
+**Auto Chain Seamless Loop Example**<br>
+*No postprocessing, raw output from the nodes (heavily compressed so that they fit into GitHub's 10 MB limit)*
+
+https://github.com/user-attachments/assets/f203a0dd-08e7-4c3d-899c-852ff48902f2
+
 <details>
 
-<summary>EXAMPLE VIDEOS</summary>
+<summary>EXAMPLE MUSIC VIDEOS</summary>
 
-### No postprocessing, raw output from the nodes (slightly compressed)
+### No postprocessing, raw output from the nodes (heavily compressed so that they fit into GitHub's 10 MB limit)
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/autochain-loop.mp4
+https://github.com/user-attachments/assets/d1cf9344-a2d0-449c-b13c-fcef5994cec7
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-1.mp4
+https://github.com/user-attachments/assets/03795595-4020-4a92-93d9-c26c0ffded5a
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-poprock-2.mp4
+https://github.com/user-attachments/assets/8cd51bbf-c19f-410e-b87d-61103815e1bd
 
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-1.mp4
-
-https://github.com/kex0/ComfyUI-H3-Studio/releases/download/docs-assets/music-cloud-2.mp4
+https://github.com/user-attachments/assets/a06a44f9-8d52-4a74-8ac0-e577053f1f91
 
 </details>
+
+# Nodes:
 
 ## Builder
 
