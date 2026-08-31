@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = "herrgotts_h3_suite_testpkg"
+PKG = "h3_studio_testpkg"
 
 DUMP = """H3 Studio Builder pack
 duration: 10.00s

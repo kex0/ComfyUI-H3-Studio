@@ -70,6 +70,24 @@ def _encode_song_slice(audio_vae, song, start_frame, grid_frames):
     return z.detach().cpu().contiguous()
 
 
+def _write_identity_still(frame, latent_prefix, clip_index):
+    """Dump the Continue identity still next to clip previews so it can be inspected."""
+    import numpy as np
+    from PIL import Image
+    from .nodes import _saved_chain_base
+
+    if frame is None or int(frame.shape[0]) == 0:
+        return None
+    base = _saved_chain_base(latent_prefix)
+    folder = os.path.dirname(base)
+    if folder:
+        os.makedirs(folder, exist_ok=True)
+    path = f"{base}_{int(clip_index):05d}_identity.png"
+    img = (frame[0, ..., :3] * 255).clamp(0, 255).byte().detach().cpu().numpy()
+    Image.fromarray(np.ascontiguousarray(img), "RGB").save(path)
+    return path
+
+
 def _apply_music_join_tail(handover, pixel_frame_count, context_frames, previous_latent, is_last):
     """Discard at least 1 s at each join and move Continue context before that cut."""
     if is_last:
@@ -269,11 +287,11 @@ class H3StudioMusicVideo:
                 }),
                 "freeze_overlap": ("BOOLEAN", {
                     "default": True,
-                    "tooltip": "Continue clips copy the previous overlap video tokens and do not denoise them. Stitch still discards that overlap. Turn off to A/B against regenerated-head Continue.",
+                    "tooltip": "Continue clips copy the previous overlap video tokens and do not denoise them. Overlap is not also packed as H3 keyframes unless this clip sandwiches another latent. Stitch still discards that overlap. Turn off to A/B against regenerated-head Continue.",
                 }),
                 "overlap_soft_steps": ("INT", {
-                    "default": 2, "min": 0, "max": 4, "step": 1,
-                    "tooltip": "When freeze_overlap is on, the last N frozen video steps get a light denoise ramp so the first kept frames are not a hard inpaint edge. 0 = hard freeze (can look overcooked just after the overlap). 2 is the starting point.",
+                    "default": 0, "min": 0, "max": 4, "step": 1,
+                    "tooltip": "When freeze_overlap is on, 0 keeps the overlap hard-frozen. 1–4 ramp the last N frozen video steps toward denoise so the first kept frames are not a hard inpaint edge. 0 is the starting point.",
                 }),
                 "latent_prefix": ("STRING", {
                     "default": "h3_music_video/clip",
@@ -367,7 +385,7 @@ class H3StudioMusicVideo:
     def _generate_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
                  width, height, duration, context_frames="22", handover_preset="Balanced",
                  save_segment_latents=True, save_clip_videos=True,
-                 freeze_overlap=True, overlap_soft_steps=2, song_audio_lock=0.9,
+                 freeze_overlap=True, overlap_soft_steps=0, song_audio_lock=0.9,
                  latent_prefix="h3_music_video/clip",
                  resume_from_clip=1, stop_after_clip=0,
                  video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
@@ -593,6 +611,15 @@ class H3StudioMusicVideo:
                 )
                 head_context = 0
             else:
+                _LOG.info(
+                    "h3_music_video: clip %s ref_pictures=%s identity=%s",
+                    clip_index, len(clip_images or []), identity_frame is not None,
+                )
+                if save_clip_videos and identity_frame is not None:
+                    ident_path = _write_identity_still(identity_frame, latent_prefix, clip_index)
+                    if ident_path:
+                        notes.append(f"clip {clip_index} identity still {ident_path}")
+                        _LOG.info("h3_music_video: clip %s identity still %s", clip_index, ident_path)
                 positive, empty, head_context, _ignored_tail, handover_info = cont.build(
                     clip, video_vae, previous_latent, clip_prompt, width, height, clip_duration,
                     context_frames=context_frames, handover_mode="auto",
@@ -728,7 +755,7 @@ class H3StudioMusicVideo:
     def _generate_fix_chain(self, model_1, clip, video_vae, audio_vae, sampler, sigmas, noise, song, prompt,
                  width, height, duration, context_frames="22", handover_preset="Balanced",
                  save_segment_latents=True, save_clip_videos=True,
-                 freeze_overlap=True, overlap_soft_steps=2, song_audio_lock=0.9,
+                 freeze_overlap=True, overlap_soft_steps=0, song_audio_lock=0.9,
                  latent_prefix="h3_music_video/clip",
                  video_crossfade_frames=4, audio_crossfade_ms=15.0, max_safe_tail_bridge_frames=2,
                  save_images_to_disk=False, unique_id=None, pack=None, clip_index="", **kwargs):

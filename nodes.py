@@ -25,7 +25,6 @@ from .latent_math import (
     loop_end_keyframe_offsets, next_clip_end_keyframe_offsets, end_context_includes_audio,
 )
 from .patch_layout import HC_INDEX, HC_AUDIO_END_FRAME
-from .runtime_patches import ensure_h3_runtime_patches
 from .motion_analysis import analyze_freeze_tail, phase_aware_safety_from_confidence
 from .release_utils import (
     duration_to_requested_frames, normalize_alignment_mode, normalize_safety_mode,
@@ -232,13 +231,6 @@ def _apply_song_audio_lock(latent, song, lock):
     return latent, note
 
 
-def _require_patches():
-    # v1.1.4: importing/installing the node pack must not alter ComfyUI's H3
-    # runtime. Install the two narrowly marker-gated hooks only when a direct
-    # latent continuation is actually requested.
-    ensure_h3_runtime_patches()
-
-
 class H3ContinuousStart:
     @classmethod
     def INPUT_TYPES(cls):
@@ -324,8 +316,6 @@ class H3ContinuousStart:
 
         release_loaded_models()
         cond = clip.encode_from_tokens_scheduled(tokens)
-        if song_audio_latent is not None:
-            _require_patches()
         keyframes = []
         if first is not None or last is not None:
             release_loaded_models()
@@ -488,9 +478,9 @@ class H3ContinuousContinue:
                 "reference_image": ("IMAGE", {"tooltip": "Optional identity/style reference. Address it as <Picture 1>. Encoded as a Ref2VA image ref (Qwen + DiT)."}),
                 "identity_frame": ("IMAGE", {"tooltip": "Last overlap decoded still from the previous clip. Used as an I2V-style appearance lock for the rest of this clip. Does not freeze motion. Auto Chain / Music Video fill this automatically."}),
                 "freeze_overlap": ("BOOLEAN", {"default": True,
-                    "tooltip": "Copy the previous clip's overlap video tokens into this clip and do not denoise them. Stitch still discards that overlap. Turn off to compare against regenerated-head Continue."}),
-                "overlap_soft_steps": ("INT", {"default": 2, "min": 0, "max": 4, "step": 1,
-                    "tooltip": "When freeze_overlap is on, the last N frozen video steps get a light denoise ramp so the first kept frames are not a hard inpaint edge. 0 = hard freeze. 2 is the starting point."}),
+                    "tooltip": "Copy the previous clip's overlap video tokens into this clip and do not denoise them. Overlap is not also packed as H3 keyframes unless this clip sandwiches another latent. Stitch still discards that overlap. Turn off to compare against regenerated-head Continue."}),
+                "overlap_soft_steps": ("INT", {"default": 0, "min": 0, "max": 4, "step": 1,
+                    "tooltip": "When freeze_overlap is on, 0 keeps the overlap hard-frozen. 1–4 ramp the last N frozen video steps toward denoise so the first kept frames are not a hard inpaint edge. 0 is the starting point."}),
             },
         }
 
@@ -503,12 +493,11 @@ class H3ContinuousContinue:
     def build(self, clip, vae, previous_latent, prompt, width, height, length,
               context_frames="22", handover_mode="auto", alignment_mode="phase_aligned_extended",
               manual_landing_tail_frames=34, ref_image_size="match", freeze_overlap=True,
-              overlap_soft_steps=2, handover=None,
+              overlap_soft_steps=0, handover=None,
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,
               audio_vae=None, end_skip_steps=None, pack_end_audio=True):
-        _require_patches()
         context_frames = int(context_frames)
         manual_landing_tail_frames = int(manual_landing_tail_frames)
         overlap_soft_steps = int(overlap_soft_steps)
@@ -559,13 +548,17 @@ class H3ContinuousContinue:
         # so these offsets exactly match the target clip's canonical head grid.
         # The retained phase_aware fallback can still use non-canonical source-relative
         # offsets for A/B comparison with v0.4.1.
+        pack_overlap_kfs = not (bool(freeze_overlap) and end_latent is None)
         keyframes = []
-        for k, pixel_offset in enumerate(sl["offsets"]):
-            keyframes.append({
-                "resolved_frame_index": 0,
-                HC_INDEX: int(pixel_offset),
-                "latent": source[:, :, k:k + 1],
-            })
+        if pack_overlap_kfs:
+            for k, pixel_offset in enumerate(sl["offsets"]):
+                keyframes.append({
+                    "resolved_frame_index": 0,
+                    HC_INDEX: int(pixel_offset),
+                    "latent": source[:, :, k:k + 1],
+                })
+        else:
+            freeze_note_extra += ", overlap not packed as keyframes"
 
         last = None
         keyframe_images = []
@@ -616,14 +609,25 @@ class H3ContinuousContinue:
         )
         audio_items, audio_blocks = _ref2va_audio_items_and_blocks(reference_audios, audio_vae)
         ref_items = _qwen_picture_items(pics, width, height, ref_image_size)
+        identity_as_qwen = False
         if not ref_items and identity is not None:
             ref_items.append({"type": "image", "data": identity})
+            identity_as_qwen = True
             if last is not None:
                 ref_items.append({"type": "image", "data": last})
         if song_audio_latent is not None:
             ref_items.append({"type": "audio"})
         ref_items.extend(video_items)
         ref_items.extend(audio_items)
+        if pics:
+            _LOG.info(
+                "h3_continuous: continue Qwen=Ref2VA pictures=%s identity_dit=%s",
+                len(pics), identity is not None,
+            )
+        elif identity_as_qwen:
+            _LOG.info("h3_continuous: continue Qwen=identity still (no picture refs)")
+        else:
+            _LOG.info("h3_continuous: continue Qwen=no image refs")
 
         if ref_items:
             tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
@@ -759,7 +763,10 @@ class H3ContinuousContinue:
             f"requested {context_frames}) | offsets {sl['offsets']} | "
             f"{audio_note} | "
             f"ignored previous tail {ignored_tail} frames (latent handover only)" +
-            phase_note + freeze_note + freeze_note_extra + identity_note + end_note + song_lock_note
+            phase_note + freeze_note + freeze_note_extra + identity_note +
+            f" | qwen pictures {len(pics)}" +
+            (" (identity as qwen image)" if identity_as_qwen else "") +
+            end_note + song_lock_note
         )
         _LOG.info("h3_continuous: %s", info)
         return (cond, target_latent, actual_context_frames, ignored_tail, info)
@@ -1241,7 +1248,7 @@ class H3ContinuousContinueV1(H3ContinuousContinue):
     def build(self, clip, vae, previous_latent, prompt, width, height, duration,
               context_frames="22", handover_mode="auto", alignment_mode="phase_aligned_extended",
               manual_landing_tail_frames=34, ref_image_size="match", freeze_overlap=True,
-              overlap_soft_steps=2, handover=None,
+              overlap_soft_steps=0, handover=None,
               last_frame=None, reference_image=None, reference_images=None, end_latent=None,
               song_audio_latent=None, identity_frame=None, song_audio_lock=0.0,
               reference_videos=None, reference_video_audios=None, reference_audios=None,
@@ -1426,12 +1433,12 @@ class H3ContinuousStitchOutputV1:
 # ---------------------------------------------------------------------------
 
 class H3ContinuousStartV11(H3ContinuousStartV1):
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 Clip 1: native FL2VA first/last anchors (both optional) with Duration (Seconds). Optional <Picture N> stills are Ref2VA."
 
 
 class H3ContinuousContinueV11(H3ContinuousContinueV1):
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 Clip 2+: phase-aligned direct video+audio latent continuation. Auto handover consumes lock or no-lock-fallback metadata from the v1.2 analyzer."
 
 
@@ -1530,7 +1537,7 @@ class H3ContinuousAnalyzeHandoverV11(H3ContinuousAnalyzeHandoverV1):
                 ordered[name] = (kind, opts)
         return {"required": ordered}
 
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 Auto Handover. Balanced/Motion Safe use freeze_hold=8. If no lock is found, freeze_hold-1 ending frames are excluded before phase-aligned latent cutoff selection."
 
     def analyze(self, images, preset="Balanced", analysis_window=72, freeze_hold=8, safety_margin=3,
@@ -1632,7 +1639,7 @@ class H3ContinuousStitchOutputV11(H3ContinuousStitchOutputV1):
             },
         }
 
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 rendered AV output helper. Full keeps everything; Stitch Ready removes continuation overlap plus the effective freeze-safe tail; Final Clip removes only the reused head so the last segment can reach its complete Last Frame landing."
 
 
@@ -1678,7 +1685,7 @@ class H3ContinuousSeamlessJoinV11:
     RETURN_TYPES = ("IMAGE", "AUDIO", "STRING")
     RETURN_NAMES = ("images", "audio", "join_info")
     FUNCTION = "join"
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 context-aligned rendered AV join. Safe Tail Bridge replaces the first few potentially unstable continuation frames with detector-approved pixels from the previous clip; video gets a short corresponding-context blend and audio keeps the tested 15 ms de-click crossfade."
 
     def join(self, previous_images, next_images, next_output_mode="Stitch Ready",
@@ -1890,7 +1897,7 @@ class H3ContinuousStitchSavedChainV11:
                 "first_clip": ("INT", {"default": 1, "min": 1, "max": 99999}),
                 "last_clip": ("INT", {"default": 0, "min": 0, "max": 99999,
                     "tooltip": "0 = automatically use the highest numbered clip for this prefix."}),
-                "filename_prefix": ("STRING", {"default": "video/Herrgotts_H3_Infinite_Stitched"}),
+                "filename_prefix": ("STRING", {"default": "video/h3_studio_stitched"}),
                 "video_crossfade_frames": ("INT", {"default": 4, "min": 0, "max": 16, "step": 1,
                     "tooltip": "Context-aligned video crossfade. Recommended: 4 frames."}),
                 "audio_crossfade_ms": ("FLOAT", {"default": 15.0, "min": 0.0, "max": 100.0, "step": 1.0,
@@ -1912,11 +1919,11 @@ class H3ContinuousStitchSavedChainV11:
     RETURN_NAMES = ("video_path", "stitch_info")
     FUNCTION = "stitch"
     OUTPUT_NODE = True
-    CATEGORY = "Herrgotts H3 Infinite Continuation Suite"
+    CATEGORY = "H3 Continuous"
     DESCRIPTION = "v1.2 memory-bounded saved-chain stitcher. Uses Safe Tail Bridge plus short context-aligned video/audio seam smoothing and encodes directly to MP4 so peak memory does not grow with chain length."
 
     def stitch(self, video_vae, audio_vae, latent_prefix="h3_auto_chain/clip",
-               first_clip=1, last_clip=0, filename_prefix="video/Herrgotts_H3_Infinite_Stitched",
+               first_clip=1, last_clip=0, filename_prefix="video/h3_studio_stitched",
                video_crossfade_frames=4, audio_crossfade_ms=15.0, luminance_match=False,
                luminance_fade_frames=16, max_luminance_correction_percent=10.0, crf=18,
                max_safe_tail_bridge_frames=2):

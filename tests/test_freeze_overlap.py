@@ -7,7 +7,7 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PKG = "herrgotts_h3_suite_testpkg"
+PKG = "h3_studio_testpkg"
 
 
 def _load(name):
@@ -153,3 +153,33 @@ def test_freeze_overlap_wired_through_continue_and_chains():
     assert "song_audio_latent=song_latent" in music_video
     assert "song_audio_lock=song_audio_lock" in music_video
     assert '"song_audio_lock"' in music_video
+
+
+def test_continue_skips_overlap_keyframes_when_freeze_without_end_latent():
+    nodes = (ROOT / "nodes.py").read_text(encoding="utf-8")
+    assert "pack_overlap_kfs = not (bool(freeze_overlap) and end_latent is None)" in nodes
+    assert "if pack_overlap_kfs:" in nodes
+    assert "overlap not packed as keyframes" in nodes
+    continue_src = nodes.split("class H3ContinuousContinue:", 1)[1].split("class H3ContinuousSaveLatent", 1)[0]
+    loop = continue_src.split("if pack_overlap_kfs:", 1)[1].split("last = None", 1)[0]
+    assert "for k, pixel_offset in enumerate(sl[\"offsets\"])" in loop
+    after_kfs = continue_src.split("last = None", 1)[1]
+    assert "end_latent is not None" in after_kfs
+    assert "identity still @" in after_kfs
+    assert "HC_INDEX: identity_at" in after_kfs
+    assert "HC_AUDIO_END_FRAME" in after_kfs
+
+
+def test_overlap_soft_steps_defaults_to_hard_freeze():
+    nodes = (ROOT / "nodes.py").read_text(encoding="utf-8")
+    auto_chain = (ROOT / "auto_chain.py").read_text(encoding="utf-8")
+    music_video = (ROOT / "music_video.py").read_text(encoding="utf-8")
+    freeze = (ROOT / "freeze_overlap.py").read_text(encoding="utf-8")
+    assert '"default": 0, "min": 0, "max": 4, "step": 1' in nodes.split("overlap_soft_steps", 1)[1]
+    assert '"default": 0, "min": 0, "max": 4, "step": 1' in auto_chain.split("overlap_soft_steps", 1)[1]
+    assert '"default": 0, "min": 0, "max": 4, "step": 1' in music_video.split("overlap_soft_steps", 1)[1]
+    assert "overlap_soft_steps=0" in nodes
+    assert "overlap_soft_steps=0" in auto_chain
+    assert "overlap_soft_steps=0" in music_video
+    assert "def freeze_video_head(video, source_head, audio, soft_steps=0):" in freeze
+    assert "OVERLAP_SOFT_STEPS = 2" in (ROOT / "face_refine" / "grid.py").read_text(encoding="utf-8")

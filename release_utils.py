@@ -1,4 +1,4 @@
-"""Release-facing helpers for Herrgotts H3 Infinite Continuation Suite v1.2.
+"""Release-facing helpers for H3 Studio continuation v1.2.
 
 These helpers are intentionally pure Python so duration conversion, preset
 selection, dropdown compatibility, and stitch planning can be regression-tested
